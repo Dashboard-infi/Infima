@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import SignatureCanvas from 'react-signature-canvas';
 import { api } from '../api';
@@ -13,16 +13,16 @@ export default function DiagrammeDetail() {
   const [saving, setSaving] = useState(false);
   const sigRef = useRef();
 
-  useEffect(() => {
-    loadDiagramme();
-  }, [id]);
-
-  const loadDiagramme = () => {
+  const loadDiagramme = useCallback(() => {
     api.getDiagramme(id).then(data => {
       setDiag(data);
       setCases(data.cases || []);
     }).catch(() => navigate('/soins'));
-  };
+  }, [id, navigate]);
+
+  useEffect(() => {
+    loadDiagramme();
+  }, [loadDiagramme]);
 
   const toggleCase = (caseId, field) => {
     setCases(prev => prev.map(c => c.id === caseId ? { ...c, [field]: !c[field] } : c));

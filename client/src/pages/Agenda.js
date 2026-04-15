@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { api } from '../api';
 import { format, addDays, subDays, startOfWeek } from 'date-fns';
 import { fr } from 'date-fns/locale';
@@ -12,14 +12,14 @@ export default function Agenda() {
 
   const dateStr = format(selectedDate, 'yyyy-MM-dd');
 
+  const loadRdvs = useCallback(() => {
+    api.getAgenda({ date: dateStr }).then(setRdvs).catch(() => {});
+  }, [dateStr]);
+
   useEffect(() => {
     loadRdvs();
     api.getPatients().then(setPatients).catch(() => {});
-  }, [dateStr]);
-
-  const loadRdvs = () => {
-    api.getAgenda({ date: dateStr }).then(setRdvs).catch(() => {});
-  };
+  }, [loadRdvs]);
 
   const handleCreate = async (e) => {
     e.preventDefault();

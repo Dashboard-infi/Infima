@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { api } from '../api';
 import { format, startOfWeek, addDays, addWeeks, subWeeks } from 'date-fns';
 import { fr } from 'date-fns/locale';
@@ -20,14 +20,14 @@ export default function Planning() {
   const weekEnd = addDays(weekStart, 6);
   const weekDays = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
 
-  useEffect(() => { loadEvents(); }, [weekStart]);
-
-  const loadEvents = () => {
+  const loadEvents = useCallback(() => {
     api.getPlanning({
       debut: format(weekStart, 'yyyy-MM-dd'),
       fin: format(weekEnd, 'yyyy-MM-dd')
     }).then(setEvents).catch(() => {});
-  };
+  }, [weekEnd, weekStart]);
+
+  useEffect(() => { loadEvents(); }, [loadEvents]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();

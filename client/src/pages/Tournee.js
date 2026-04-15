@@ -1,9 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { api } from '../api';
 import { format } from 'date-fns';
-import { fr } from 'date-fns/locale';
 
 // Fix leaflet icons
 delete L.Icon.Default.prototype._getIconUrl;
@@ -26,7 +25,6 @@ function createIcon(color, label) {
 
 export default function Tournee() {
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'));
-  const [tournees, setTournees] = useState([]);
   const [selectedTournee, setSelectedTournee] = useState(null);
   const [patients, setPatients] = useState([]);
   const [showModal, setShowModal] = useState(false);
@@ -41,20 +39,19 @@ export default function Tournee() {
     api.getKm({}).then(setKm).catch(() => {});
   }, []);
 
-  useEffect(() => {
-    api.getTournees({ date }).then(data => {
-      setTournees(data);
-      if (data.length > 0) loadTourneeDetail(data[0].id);
-      else setSelectedTournee(null);
-    }).catch(() => {});
-  }, [date]);
-
-  const loadTourneeDetail = (id) => {
+  const loadTourneeDetail = useCallback((id) => {
     api.getTournee(id).then(data => {
       setSelectedTournee(data);
       geocodeEtapes(data.etapes || []);
     }).catch(() => {});
-  };
+  }, []);
+
+  useEffect(() => {
+    api.getTournees({ date }).then(data => {
+      if (data.length > 0) loadTourneeDetail(data[0].id);
+      else setSelectedTournee(null);
+    }).catch(() => {});
+  }, [date, loadTourneeDetail]);
 
   const geocodeEtapes = async (etapes) => {
     const points = [];
@@ -74,7 +71,7 @@ export default function Tournee() {
   const handleCreate = async (e) => {
     e.preventDefault();
     try {
-      const result = await api.createTournee({
+      await api.createTournee({
         date_tournee: date,
         ville_depart: villeDepart,
         adresse_depart: adresseDepart,
@@ -85,8 +82,8 @@ export default function Tournee() {
       setVilleDepart('');
       setAdresseDepart('');
       api.getTournees({ date }).then(data => {
-        setTournees(data);
         if (data.length > 0) loadTourneeDetail(data[0].id);
+        else setSelectedTournee(null);
       });
     } catch (err) { alert(err.message); }
   };
