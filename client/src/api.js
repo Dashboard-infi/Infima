@@ -1,4 +1,4 @@
-const API_BASE = process.env.REACT_APP_API_URL || 'http://10.5.0.2:3001';
+const API_BASE = process.env.REACT_APP_API_URL || 'https://infima-production.up.railway.app';
 const APP_VERSION = process.env.REACT_APP_VERSION || '1.0.0';
 
 async function request(endpoint, options = {}) {
