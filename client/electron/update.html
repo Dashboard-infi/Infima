@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mise a jour obligatoire</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0A3D62 0%, #1B6CA8 100%);
+            color: #fff;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 32px;
+            -webkit-app-region: drag;
+            user-select: none;
+            overflow: hidden;
+        }
+        .icon {
+            width: 64px;
+            height: 64px;
+            background: rgba(255,255,255,0.15);
+            border-radius: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 24px;
+        }
+        .icon svg { width: 32px; height: 32px; }
+        h1 {
+            font-size: 20px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            text-align: center;
+        }
+        .subtitle {
+            font-size: 13px;
+            opacity: 0.8;
+            text-align: center;
+            line-height: 1.5;
+            margin-bottom: 32px;
+            max-width: 320px;
+        }
+        .progress-container {
+            width: 100%;
+            max-width: 320px;
+            margin-bottom: 16px;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: #1D9E75;
+            border-radius: 4px;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        .progress-fill.indeterminate {
+            width: 30%;
+            animation: indeterminate 1.5s infinite ease-in-out;
+        }
+        @keyframes indeterminate {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(400%); }
+        }
+        .status {
+            font-size: 12px;
+            opacity: 0.9;
+            text-align: center;
+            min-height: 18px;
+        }
+        .speed {
+            font-size: 11px;
+            opacity: 0.6;
+            text-align: center;
+            margin-top: 4px;
+        }
+        .steps {
+            margin-top: 24px;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .step {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.3);
+            transition: background 0.3s;
+        }
+        .step.active { background: #1D9E75; }
+        .step.done { background: #fff; }
+        .step-labels {
+            display: flex;
+            gap: 20px;
+            margin-top: 8px;
+            font-size: 10px;
+            opacity: 0.6;
+        }
+    </style>
+</head>
+<body>
+    <div class="icon">
+        <svg viewBox="0 0 24 24" fill="none">
+            <path d="M12 2v8m0 0l3-3m-3 3l-3-3" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M4 14v4a2 2 0 002 2h12a2 2 0 002-2v-4" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+    </div>
+
+    <h1>Mise a jour obligatoire</h1>
+    <p class="subtitle">Une nouvelle version est requise pour continuer a utiliser l'application.</p>
+
+    <div class="progress-container">
+        <div class="progress-bar">
+            <div class="progress-fill indeterminate" id="progressFill"></div>
+        </div>
+    </div>
+
+    <div class="status" id="statusText">Verification...</div>
+    <div class="speed" id="speedText"></div>
+
+    <div class="steps">
+        <div class="step active" id="step1"></div>
+        <div class="step" id="step2"></div>
+        <div class="step" id="step3"></div>
+        <div class="step" id="step4"></div>
+    </div>
+    <div class="step-labels">
+        <span>Verification</span>
+        <span>Telechargement</span>
+        <span>Installation</span>
+        <span>Redemarrage</span>
+    </div>
+
+    <script>
+        const progressFill = document.getElementById('progressFill');
+        const statusText = document.getElementById('statusText');
+        const speedText = document.getElementById('speedText');
+        const steps = [
+            document.getElementById('step1'),
+            document.getElementById('step2'),
+            document.getElementById('step3'),
+            document.getElementById('step4')
+        ];
+
+        function setStep(index) {
+            steps.forEach((s, i) => {
+                s.classList.remove('active', 'done');
+                if (i < index) s.classList.add('done');
+                if (i === index) s.classList.add('active');
+            });
+        }
+
+        if (window.electronAPI) {
+            window.electronAPI.onUpdateStatus((data) => {
+                statusText.textContent = data.message || '';
+                speedText.textContent = data.speed || '';
+
+                switch (data.status) {
+                    case 'checking':
+                        setStep(0);
+                        progressFill.classList.add('indeterminate');
+                        progressFill.style.width = '30%';
+                        break;
+                    case 'downloading':
+                        setStep(1);
+                        if (data.progress != null && data.progress > 0) {
+                            progressFill.classList.remove('indeterminate');
+                            progressFill.style.width = data.progress + '%';
+                        } else {
+                            progressFill.classList.add('indeterminate');
+                        }
+                        break;
+                    case 'installing':
+                        setStep(2);
+                        progressFill.classList.remove('indeterminate');
+                        progressFill.style.width = '100%';
+                        break;
+                    case 'restarting':
+                        setStep(3);
+                        progressFill.classList.remove('indeterminate');
+                        progressFill.style.width = '100%';
+                        break;
+                    case 'offline':
+                        setStep(0);
+                        progressFill.classList.add('indeterminate');
+                        progressFill.style.width = '30%';
+                        break;
+                    case 'error':
+                        progressFill.classList.add('indeterminate');
+                        break;
+                }
+            });
+        }
+
+        // Disable all keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            // Block F5, Ctrl+R, Ctrl+W, Alt+F4
+            if (e.key === 'F5' ||
+                (e.ctrlKey && e.key === 'r') ||
+                (e.ctrlKey && e.key === 'w') ||
+                (e.altKey && e.key === 'F4')) {
+                e.preventDefault();
+            }
+        });
+
+        // Block right-click
+        document.addEventListener('contextmenu', (e) => e.preventDefault());
+    </script>
+</body>
+</html>
