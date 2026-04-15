@@ -1,6 +1,8 @@
 -- Base de données pour Cabinet Infirmier Donneville
-CREATE DATABASE IF NOT EXISTS cabinet_donneville;
-USE cabinet_donneville;
+-- Pour Aiven: la base 'defaultdb' est utilisée directement
+-- Pour local: décommentez les 2 lignes suivantes
+-- CREATE DATABASE IF NOT EXISTS cabinet_donneville;
+-- USE cabinet_donneville;
 
 -- ============================================
 -- Table des profils infirmières

@@ -78,8 +78,8 @@
         "publish": [
             {
                 "provider": "github",
-                "owner": "VOTRE_GITHUB_USERNAME",
-                "repo": "cabinet-donneville",
+                "owner": "Dashboard-infi",
+                "repo": "Infima",
                 "releaseType": "release"
             }
         ]

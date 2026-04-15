@@ -50,12 +50,27 @@ async function compressAndSave(buffer, patientId, patientNom, description) {
 }
 
 // Connexion à la base de données MySQL
-const db = mysql.createPool({
+const dbConfig = {
     host: process.env.DB_HOST || 'localhost',
+    port: parseInt(process.env.DB_PORT) || 3306,
     user: process.env.DB_USER || 'root',
     password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'cabinet_donneville'
-});
+    database: process.env.DB_NAME || 'cabinet_donneville',
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
+};
+
+if (process.env.DB_SSL === 'true') {
+    const caPath = path.join(__dirname, 'ca.pem');
+    if (fs.existsSync(caPath)) {
+        dbConfig.ssl = { ca: fs.readFileSync(caPath) };
+    } else {
+        dbConfig.ssl = { rejectUnauthorized: false };
+    }
+}
+
+const db = mysql.createPool(dbConfig);
 
 const JWT_SECRET = process.env.JWT_SECRET || 'votre_cle_secrete_ici';
 
