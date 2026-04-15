@@ -26,5 +26,9 @@ server/uploads/
 .DS_Store
 Thumbs.db
 
+# Capacitor native projects
+client/android/
+client/ios/
+
 # Supabase
 supabase/.temp/

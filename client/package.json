@@ -7,24 +7,28 @@
     "main": "electron/main.js",
     "homepage": "./",
     "dependencies": {
-        "react": "^18.2.0",
-        "react-dom": "^18.2.0",
-        "react-router-dom": "^6.16.0",
-        "react-scripts": "5.0.1",
-        "react-signature-canvas": "^1.0.6",
-        "leaflet": "^1.9.4",
-        "react-leaflet": "^4.2.1",
+        "@capacitor/android": "^8.3.0",
+        "@capacitor/cli": "^8.3.0",
+        "@capacitor/core": "^8.3.0",
+        "@capacitor/ios": "^8.3.0",
         "date-fns": "^2.30.0",
         "date-fns-tz": "^2.0.0",
+        "electron-log": "^5.1.1",
         "electron-updater": "^6.1.7",
-        "electron-log": "^5.1.1"
+        "leaflet": "^1.9.4",
+        "react": "^18.2.0",
+        "react-dom": "^18.2.0",
+        "react-leaflet": "^4.2.1",
+        "react-router-dom": "^6.16.0",
+        "react-scripts": "5.0.1",
+        "react-signature-canvas": "^1.0.6"
     },
     "devDependencies": {
+        "concurrently": "^8.2.2",
+        "cross-env": "^7.0.3",
         "electron": "^28.1.0",
         "electron-builder": "^24.9.1",
-        "concurrently": "^8.2.2",
-        "wait-on": "^7.2.0",
-        "cross-env": "^7.0.3"
+        "wait-on": "^7.2.0"
     },
     "scripts": {
         "dev": "npm start",
@@ -36,7 +40,10 @@
         "electron:build": "react-scripts build && electron-builder --win",
         "electron:build:mac": "react-scripts build && electron-builder --mac",
         "electron:build:linux": "react-scripts build && electron-builder --linux",
-        "electron:pack": "electron-builder --dir"
+        "electron:pack": "electron-builder --dir",
+        "cap:sync": "react-scripts build && npx cap sync",
+        "cap:android": "react-scripts build && npx cap sync android && npx cap open android",
+        "cap:ios": "react-scripts build && npx cap sync ios && npx cap open ios"
     },
     "build": {
         "appId": "com.cabinet-donneville.app",
@@ -54,7 +61,9 @@
             "target": [
                 {
                     "target": "nsis",
-                    "arch": ["x64"]
+                    "arch": [
+                        "x64"
+                    ]
                 }
             ],
             "icon": "public/favicon.ico"

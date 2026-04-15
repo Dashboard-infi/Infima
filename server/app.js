@@ -62,11 +62,15 @@ const dbConfig = {
 };
 
 if (process.env.DB_SSL === 'true') {
-    const caPath = path.join(__dirname, 'ca.pem');
-    if (fs.existsSync(caPath)) {
-        dbConfig.ssl = { ca: fs.readFileSync(caPath) };
+    if (process.env.DB_CA_CERT) {
+        dbConfig.ssl = { ca: process.env.DB_CA_CERT.replace(/\\n/g, '\n') };
     } else {
-        dbConfig.ssl = { rejectUnauthorized: false };
+        const caPath = path.join(__dirname, 'ca.pem');
+        if (fs.existsSync(caPath)) {
+            dbConfig.ssl = { ca: fs.readFileSync(caPath) };
+        } else {
+            dbConfig.ssl = { rejectUnauthorized: false };
+        }
     }
 }
 
