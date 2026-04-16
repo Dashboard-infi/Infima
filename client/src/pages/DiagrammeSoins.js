@@ -41,17 +41,25 @@ export default function DiagrammeSoins() {
         </div>
       ) : (
         diagrammes.map(d => (
-          <div className="card" key={d.id} onClick={() => navigate(`/soins/${d.id}`)} style={{ cursor: 'pointer' }}>
+          <div className="card" key={d.id} onClick={() => navigate(`/soins/${d.id}`)} style={{ cursor: 'pointer', borderLeft: `4px solid ${d.signe_le ? '#1D9E75' : '#D4A017'}` }}>
             <div className="card-row" style={{ marginBottom: 4 }}>
-              <span style={{ fontSize: 13, fontWeight: 600 }}>
-                {d.patient_nom} {d.patient_prenom}
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ width: 32, height: 32, borderRadius: '50%', background: d.signe_le ? '#E1F5EE' : '#FAEEDA', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  {d.signe_le ? (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7" stroke="#1D9E75" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  ) : (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" fill="#D4A017"/></svg>
+                  )}
+                </div>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{d.patient_nom} {d.patient_prenom}</div>
+                  <div style={{ fontSize: 11, color: '#7a8499' }}>{d.type_soin} — {MOIS_LABELS[d.mois]} {d.annee}</div>
+                </div>
+              </div>
               <span className={`badge ${d.signe_le ? 'badge-green' : 'badge-amber'}`}>
                 {d.signe_le ? 'Signé' : 'En cours'}
               </span>
             </div>
-            <div style={{ fontSize: 12, color: '#7a8499' }}>{d.type_soin}</div>
-            <div style={{ fontSize: 11, color: '#7a8499' }}>{MOIS_LABELS[d.mois]} {d.annee}</div>
           </div>
         ))
       )}

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../api';
 
-const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001';
+const API_BASE = process.env.REACT_APP_API_URL || 'https://infima-production.up.railway.app';
 
 export default function PatientFiche() {
   const { id } = useParams();
@@ -86,24 +86,41 @@ export default function PatientFiche() {
       </button>
 
       {/* En-tête patient */}
-      <div className="card">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-          <div className="p-avatar" style={{ background: '#E6F1FB', color: '#185FA5', width: 42, height: 42, fontSize: 15 }}>{initials}</div>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 600 }}>{patient.nom} {patient.prenom}</div>
-            <div style={{ fontSize: 11, color: '#7a8499' }}>
+      <div className="card" style={{ background: 'linear-gradient(135deg, #0A3D62 0%, #185FA5 100%)', color: '#fff', border: 'none', padding: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+          <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17, fontWeight: 700, flexShrink: 0 }}>
+            {initials}
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>{patient.nom} {patient.prenom}</div>
+            <div style={{ fontSize: 11, opacity: 0.8 }}>
               Dr. {patient.medecin_traitant || '—'} {patient.date_naissance ? `• Né(e) ${new Date(patient.date_naissance).toLocaleDateString('fr-FR')}` : ''}
             </div>
           </div>
-          <span className={`badge ${patient.actif ? 'badge-green' : 'badge-red'}`} style={{ marginLeft: 'auto' }}>
+          <span style={{ background: patient.actif ? 'rgba(29,158,117,0.3)' : 'rgba(163,45,45,0.3)', padding: '3px 10px', borderRadius: 20, fontSize: 10, fontWeight: 600 }}>
             {patient.actif ? 'Actif' : 'Inactif'}
           </span>
         </div>
-        <div style={{ fontSize: 11, color: '#7a8499' }}>
-          {patient.adresse}{patient.ville ? `, ${patient.code_postal} ${patient.ville}` : ''}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 11, opacity: 0.85 }}>
+          {patient.adresse && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" stroke="currentColor" strokeWidth="1.5"/></svg>
+              {patient.adresse}{patient.ville ? `, ${patient.code_postal} ${patient.ville}` : ''}
+            </div>
+          )}
+          {patient.telephone && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M22 16.92v3a2 2 0 01-2.18 2A19.86 19.86 0 013.09 5.18 2 2 0 015.11 3h3a2 2 0 012 1.72c.12.96.36 1.9.7 2.81a2 2 0 01-.45 2.11L8.09 11.91a16 16 0 006 6l2.27-2.27a2 2 0 012.11-.45c.91.34 1.85.58 2.81.7A2 2 0 0122 16.92z" stroke="currentColor" strokeWidth="1.5"/></svg>
+              {patient.telephone}
+            </div>
+          )}
+          {patient.numero_secu && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><rect x="2" y="5" width="20" height="14" rx="2" stroke="currentColor" strokeWidth="1.5"/><path d="M2 10h20" stroke="currentColor" strokeWidth="1.5"/></svg>
+              Sécu: {patient.numero_secu}
+            </div>
+          )}
         </div>
-        {patient.telephone && <div style={{ fontSize: 11, color: '#7a8499', marginTop: 2 }}>Tél: {patient.telephone}</div>}
-        {patient.numero_secu && <div style={{ fontSize: 11, color: '#7a8499', marginTop: 2 }}>Sécu: {patient.numero_secu}</div>}
       </div>
 
       {/* Tabs */}
@@ -119,12 +136,12 @@ export default function PatientFiche() {
           <div className="section-title">Paramètres vitaux</div>
           {latestVitaux ? (
             <div className="vital-grid">
-              <div className="vital-card"><div className="vital-val">{latestVitaux.tension || '—'}</div><div className="vital-label">Tension (cmHg)</div></div>
-              <div className="vital-card"><div className="vital-val">{latestVitaux.saturation ? `${latestVitaux.saturation}%` : '—'}</div><div className="vital-label">Saturation O2</div></div>
-              <div className="vital-card"><div className="vital-val">{latestVitaux.pouls || '—'}</div><div className="vital-label">Pouls (bpm)</div></div>
-              <div className="vital-card"><div className="vital-val">{latestVitaux.glycemie || '—'}</div><div className="vital-label">Glycémie (g/L)</div></div>
-              <div className="vital-card"><div className="vital-val">{latestVitaux.temperature ? `${latestVitaux.temperature}°` : '—'}</div><div className="vital-label">Température</div></div>
-              <div className="vital-card"><div className="vital-val">{latestVitaux.eva != null ? `EVA ${latestVitaux.eva}/10` : '—'}</div><div className="vital-label">Douleur</div></div>
+              <div className="vital-card" style={{ borderLeft: '3px solid #E53E3E' }}><div className="vital-val" style={{ color: '#E53E3E' }}>{latestVitaux.tension || '—'}</div><div className="vital-label">Tension (cmHg)</div></div>
+              <div className="vital-card" style={{ borderLeft: '3px solid #3182CE' }}><div className="vital-val" style={{ color: '#3182CE' }}>{latestVitaux.saturation ? `${latestVitaux.saturation}%` : '—'}</div><div className="vital-label">Saturation O2</div></div>
+              <div className="vital-card" style={{ borderLeft: '3px solid #D69E2E' }}><div className="vital-val" style={{ color: '#D69E2E' }}>{latestVitaux.pouls || '—'}</div><div className="vital-label">Pouls (bpm)</div></div>
+              <div className="vital-card" style={{ borderLeft: '3px solid #38A169' }}><div className="vital-val" style={{ color: '#38A169' }}>{latestVitaux.glycemie || '—'}</div><div className="vital-label">Glycémie (g/L)</div></div>
+              <div className="vital-card" style={{ borderLeft: '3px solid #DD6B20' }}><div className="vital-val" style={{ color: '#DD6B20' }}>{latestVitaux.temperature ? `${latestVitaux.temperature}°` : '—'}</div><div className="vital-label">Température</div></div>
+              <div className="vital-card" style={{ borderLeft: '3px solid #805AD5' }}><div className="vital-val" style={{ color: '#805AD5' }}>{latestVitaux.eva != null ? `EVA ${latestVitaux.eva}/10` : '—'}</div><div className="vital-label">Douleur</div></div>
             </div>
           ) : (
             <div className="card"><p style={{ fontSize: 12, color: '#7a8499', textAlign: 'center', padding: 10 }}>Aucune mesure enregistrée</p></div>

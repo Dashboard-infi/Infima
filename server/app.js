@@ -489,8 +489,8 @@ app.put('/api/diagrammes/:id/cases', authenticateToken, async (req, res) => {
     try {
         const { cases } = req.body;
         for (const c of cases) {
-            await db.query('UPDATE diagramme_cases SET matin=?, midi=?, soir=?, notes_jour=? WHERE id=?',
-                [c.matin, c.midi, c.soir, c.notes_jour, c.id]);
+            await db.query('UPDATE diagramme_cases SET matin=?, midi=?, soir=?, notes_jour=?, legendes=? WHERE id=?',
+                [c.matin, c.midi, c.soir, c.notes_jour, c.legendes || null, c.id]);
         }
         res.json({ message: 'Cases mises à jour' });
     } catch (error) {
@@ -503,6 +503,46 @@ app.put('/api/diagrammes/:id/signer', authenticateToken, async (req, res) => {
         const { signature_data } = req.body;
         await db.query('UPDATE diagrammes_soins SET signature_data=?, signe_le=NOW() WHERE id=?', [signature_data, req.params.id]);
         res.json({ message: 'Diagramme signé' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ========== LEGENDES DIAGRAMME ==========
+app.get('/api/patients/:id/legendes', authenticateToken, async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT * FROM diagramme_legendes WHERE patient_id = ? AND infirmier_id = ? ORDER BY label', [req.params.id, req.user.id]);
+        res.json(rows);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/patients/:id/legendes', authenticateToken, async (req, res) => {
+    try {
+        const { label, couleur } = req.body;
+        const [result] = await db.query('INSERT INTO diagramme_legendes (patient_id, infirmier_id, label, couleur) VALUES (?,?,?,?)',
+            [req.params.id, req.user.id, label, couleur || '#0A3D62']);
+        res.status(201).json({ id: result.insertId, label, couleur: couleur || '#0A3D62' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/legendes/:id', authenticateToken, async (req, res) => {
+    try {
+        await db.query('DELETE FROM diagramme_legendes WHERE id = ? AND infirmier_id = ?', [req.params.id, req.user.id]);
+        res.json({ message: 'Légende supprimée' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ========== UNREAD MESSAGES COUNT ==========
+app.get('/api/messages/unread-count', authenticateToken, async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT COUNT(*) as count FROM messages WHERE destinataire_id = ? AND lu = FALSE', [req.user.id]);
+        res.json({ unread_count: rows[0].count });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }

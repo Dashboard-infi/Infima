@@ -49,6 +49,11 @@ export const api = {
     deletePhoto: (photoId) => request(`/api/photos/${photoId}`, { method: 'DELETE' }),
     getPhotoDownloadUrl: (photoId) => `${API_BASE}/api/photos/${photoId}/download`,
 
+    // Legendes diagramme
+    getLegendes: (patientId) => request(`/api/patients/${patientId}/legendes`),
+    createLegende: (patientId, body) => request(`/api/patients/${patientId}/legendes`, { method: 'POST', body: JSON.stringify(body) }),
+    deleteLegende: (legendeId) => request(`/api/legendes/${legendeId}`, { method: 'DELETE' }),
+
     // Vitaux
     getVitaux: (patientId) => request(`/api/patients/${patientId}/vitaux`),
     addVitaux: (patientId, body) => request(`/api/patients/${patientId}/vitaux`, { method: 'POST', body: JSON.stringify(body) }),
@@ -85,6 +90,7 @@ export const api = {
     getMessages: () => request('/api/messages'),
     sendMessage: (body) => request('/api/messages', { method: 'POST', body: JSON.stringify(body) }),
     markRead: (id) => request(`/api/messages/${id}/lire`, { method: 'PUT' }),
+    getUnreadMsgCount: () => request('/api/messages/unread-count'),
 
     // Infirmiers
     getInfirmiers: () => request('/api/infirmiers'),

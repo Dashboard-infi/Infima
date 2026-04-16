@@ -133,7 +133,22 @@ CREATE TABLE IF NOT EXISTS diagramme_cases (
     midi BOOLEAN DEFAULT FALSE,
     soir BOOLEAN DEFAULT FALSE,
     notes_jour TEXT,
+    legendes JSON DEFAULT NULL,
     FOREIGN KEY (diagramme_id) REFERENCES diagrammes_soins(id) ON DELETE CASCADE
+);
+
+-- ============================================
+-- Table des légendes de diagramme (sauvegardées par patient)
+-- ============================================
+CREATE TABLE IF NOT EXISTS diagramme_legendes (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    patient_id INT NOT NULL,
+    label VARCHAR(200) NOT NULL,
+    couleur VARCHAR(7) DEFAULT '#0A3D62',
+    infirmier_id INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE,
+    FOREIGN KEY (infirmier_id) REFERENCES infirmiers(id)
 );
 
 -- ============================================

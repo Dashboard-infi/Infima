@@ -68,16 +68,24 @@ function MainApp() {
   const [notifications, setNotifications] = useState([]);
   const [notifCount, setNotifCount] = useState(0);
   const [showNotifPanel, setShowNotifPanel] = useState(false);
+  const [unreadMsgCount, setUnreadMsgCount] = useState(0);
 
   useEffect(() => {
     loadNotifs();
-    const interval = setInterval(loadNotifs, 60000);
+    loadUnreadMessages();
+    const interval = setInterval(() => { loadNotifs(); loadUnreadMessages(); }, 60000);
     return () => clearInterval(interval);
   }, []);
 
   const loadNotifs = () => {
     api.getNotifications()
       .then(data => { setNotifications(data.notifications || []); setNotifCount(data.unread_count || 0); })
+      .catch(() => {});
+  };
+
+  const loadUnreadMessages = () => {
+    api.getUnreadMsgCount()
+      .then(data => setUnreadMsgCount(data.unread_count || 0))
       .catch(() => {});
   };
 
@@ -151,9 +159,12 @@ function MainApp() {
               </div>
             )}
           </div>
-          <button onClick={() => navigate('/messagerie')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fff' }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" stroke="#fff" strokeWidth="1.5"/><path d="M22 6l-10 7L2 6" stroke="#fff" strokeWidth="1.5" strokeLinecap="round"/></svg>
-          </button>
+          <div style={{ position: 'relative' }}>
+            <button onClick={() => { navigate('/messagerie'); loadUnreadMessages(); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fff', position: 'relative' }}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" stroke="#fff" strokeWidth="1.5"/><path d="M22 6l-10 7L2 6" stroke="#fff" strokeWidth="1.5" strokeLinecap="round"/></svg>
+              {unreadMsgCount > 0 && <span className="notif-badge">{unreadMsgCount > 9 ? '9+' : unreadMsgCount}</span>}
+            </button>
+          </div>
           <div className="avatar-circle" onClick={() => navigate('/profil')}>{initials.toUpperCase()}</div>
         </div>
       </div>
