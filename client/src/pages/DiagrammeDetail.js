@@ -171,72 +171,73 @@ export default function DiagrammeDetail() {
         )}
       </div>
 
-      {/* Grille Matin / Midi / Soir avec légendes */}
-      <div className="card" style={{ padding: 10 }}>
-        <div style={{ overflowX: 'auto' }}>
-          <div className="diag-grid">
-            <div></div>
-            <div className="diag-header">Matin</div>
-            <div className="diag-header">Midi</div>
-            <div className="diag-header">Soir</div>
-
-            {cases.map((c, idx) => {
-              const d = new Date(c.jour);
-              const isWeekend = d.getDay() === 0 || d.getDay() === 6;
-              const isToday = new Date().toDateString() === d.toDateString();
-              const jourLabel = `${JOURS_SEMAINE[d.getDay()]} ${d.getDate()}`;
-              const caseLeg = selectedLegendes[c.id] || [];
-              return (
-                <React.Fragment key={c.id}>
-                  <div className="diag-day" style={{
-                    fontWeight: isToday ? 700 : 500,
-                    color: isToday ? '#0A3D62' : isWeekend ? '#A32D2D' : '#7a8499',
-                    background: isToday ? '#E6F1FB' : idx % 2 === 0 ? '#fafbfc' : 'transparent',
-                    borderRadius: 4, padding: '4px 6px'
-                  }}>{jourLabel}</div>
-                  {['matin', 'midi', 'soir'].map(field => (
-                    <div className="diag-cell" key={field} style={{ background: isToday ? '#E6F1FB' : idx % 2 === 0 ? '#fafbfc' : 'transparent', borderRadius: 4 }}>
-                      <div
-                        className={`check-box ${c[field] ? 'done' : ''}`}
-                        onClick={() => !diag.signe_le && toggleCase(c.id, field)}
-                        style={{ width: 22, height: 22, cursor: diag.signe_le ? 'default' : 'pointer' }}
-                      >
-                        {c[field] && (
-                          <svg width="12" height="12" viewBox="0 0 12 12">
-                            <path d="M2 6l3 3 5-5" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
+      {/* Grille par jour */}
+      {cases.map((c, idx) => {
+        const d = new Date(c.jour);
+        const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+        const isToday = new Date().toDateString() === d.toDateString();
+        const jourLabel = `${JOURS_SEMAINE[d.getDay()]} ${d.getDate()}`;
+        const caseLeg = selectedLegendes[c.id] || [];
+        return (
+          <div key={c.id} className="card" style={{
+            padding: '10px 12px', marginBottom: 6,
+            borderLeft: isToday ? '4px solid #0A3D62' : isWeekend ? '4px solid #A32D2D' : '4px solid transparent',
+            background: isToday ? '#E6F1FB' : idx % 2 === 0 ? '#fff' : '#fafbfc'
+          }}>
+            {/* Jour + Matin/Midi/Soir */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: legendes.length > 0 ? 8 : 0 }}>
+              <div style={{
+                fontSize: 11, fontWeight: isToday ? 700 : 600, minWidth: 44,
+                color: isToday ? '#0A3D62' : isWeekend ? '#A32D2D' : '#3d4555'
+              }}>{jourLabel}</div>
+              {['matin', 'midi', 'soir'].map(field => (
+                <div key={field} style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 1 }}>
+                  <div
+                    className={`check-box ${c[field] ? 'done' : ''}`}
+                    onClick={() => !diag.signe_le && toggleCase(c.id, field)}
+                    style={{ width: 22, height: 22, cursor: diag.signe_le ? 'default' : 'pointer' }}
+                  >
+                    {c[field] && (
+                      <svg width="12" height="12" viewBox="0 0 12 12">
+                        <path d="M2 6l3 3 5-5" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
+                      </svg>
+                    )}
+                  </div>
+                  <span style={{ fontSize: 9, color: '#7a8499', textTransform: 'capitalize' }}>{field}</span>
+                </div>
+              ))}
+            </div>
+            {/* Légendes verticales avec checkbox */}
+            {legendes.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, paddingTop: 4, borderTop: '1px solid #f0f2f5' }}>
+                {legendes.map(l => {
+                  const isSelected = caseLeg.includes(l.id);
+                  return (
+                    <div key={l.id}
+                      onClick={() => !diag.signe_le && toggleLegendeOnCase(c.id, l.id)}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: diag.signe_le ? 'default' : 'pointer' }}>
+                      <div style={{
+                        width: 18, height: 18, borderRadius: 4, flexShrink: 0,
+                        border: isSelected ? `2px solid ${l.couleur}` : '2px solid #c8ccd6',
+                        background: isSelected ? l.couleur : '#fff',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        transition: 'all 0.15s'
+                      }}>
+                        {isSelected && (
+                          <svg width="10" height="10" viewBox="0 0 12 12">
+                            <path d="M2 6l3 3 5-5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
                           </svg>
                         )}
                       </div>
+                      <span style={{ fontSize: 11, fontWeight: 500, color: isSelected ? l.couleur : '#7a8499' }}>{l.label}</span>
                     </div>
-                  ))}
-                  {/* Légendes pour ce jour */}
-                  {legendes.length > 0 && (
-                    <>
-                      <div></div>
-                      <div style={{ gridColumn: 'span 3', display: 'flex', flexWrap: 'wrap', gap: 3, padding: '0 0 6px', borderBottom: '1px solid #f0f2f5' }}>
-                        {legendes.map(l => {
-                          const isSelected = caseLeg.includes(l.id);
-                          return (
-                            <button key={l.id} onClick={() => !diag.signe_le && toggleLegendeOnCase(c.id, l.id)}
-                              style={{
-                                fontSize: 9, fontWeight: 600, padding: '2px 8px', borderRadius: 12, cursor: diag.signe_le ? 'default' : 'pointer', border: 'none',
-                                background: isSelected ? l.couleur : '#f0f2f5',
-                                color: isSelected ? '#fff' : '#7a8499',
-                                transition: 'all 0.15s'
-                              }}>
-                              {l.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </>
-                  )}
-                </React.Fragment>
-              );
-            })}
+                  );
+                })}
+              </div>
+            )}
           </div>
-        </div>
-      </div>
+        );
+      })}
 
       {!diag.signe_le && (
         <>
