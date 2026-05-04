@@ -12,17 +12,15 @@ const cron    = require('node-cron');
 
 const app = express();
 
-// BUG FIX: CORS restreint — ne pas accepter toutes les origines en production
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
     ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
-    : ['http://localhost:3000', 'http://localhost:3001'];
+    : ['http://localhost:3000', 'http://localhost:3001', 'https://sante-libeplus.netlify.app'];
 
 app.use(cors({
     origin: (origin, callback) => {
-        // Autoriser les requêtes sans origin (Electron, mobile natif, Postman dev)
         if (!origin) return callback(null, true);
         if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
-        callback(new Error(`Origin ${origin} non autorisée par CORS`));
+        return callback(null, false);
     },
     credentials: true,
 }));
@@ -487,19 +485,18 @@ app.get('/api/patients/:id', authenticateToken, async (req, res) => {
 
         let rows;
         if (shared) {
-            // Si l'utilisateur a le partage activé, il peut voir ses patients + ceux des infirmiers avec partage activé
-            rows = await dbAsync.query(`
+            [rows] = await dbAsync.query(`
                 SELECT p.* FROM patients p
                 JOIN infirmiers i ON p.infirmier_id = i.id
                 WHERE p.id = ? AND (p.infirmier_id = ? OR i.fiche_shared = 1) AND p.deleted_at IS NULL
             `, [req.params.id, req.user.id]);
         } else {
-            rows = await dbAsync.query(
+            [rows] = await dbAsync.query(
                 'SELECT * FROM patients WHERE id = ? AND infirmier_id = ? AND deleted_at IS NULL',
                 [req.params.id, req.user.id]
             );
         }
-        if (rows.length === 0) return res.status(404).json({ error: 'Patient non trouvé' });
+        if (!rows || rows.length === 0) return res.status(404).json({ error: 'Patient non trouvé' });
         res.json(rows[0]);
     } catch (error) {
         res.status(500).json({ error: error.message });
