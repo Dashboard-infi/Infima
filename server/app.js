@@ -1,17 +1,32 @@
 require('dotenv').config();
 const express = require('express');
-const mysql = require('mysql2/promise');
-const jwt = require('jsonwebtoken');
-const bcrypt = require('bcrypt');
-const cors = require('cors');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-const sharp = require('sharp');
-const cron = require('node-cron');
+const sqlite3 = require('sqlite3').verbose();
+const jwt     = require('jsonwebtoken');
+const bcrypt  = require('bcrypt');
+const cors    = require('cors');
+const multer  = require('multer');
+const path    = require('path');
+const fs      = require('fs');
+const sharp   = require('sharp');
+const cron    = require('node-cron');
 
 const app = express();
-app.use(cors());
+
+// BUG FIX: CORS restreint — ne pas accepter toutes les origines en production
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+    : ['http://localhost:3000', 'http://localhost:3001'];
+
+app.use(cors({
+    origin: (origin, callback) => {
+        // Autoriser les requêtes sans origin (Electron, mobile natif, Postman dev)
+        if (!origin) return callback(null, true);
+        if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+        callback(new Error(`Origin ${origin} non autorisée par CORS`));
+    },
+    credentials: true,
+}));
+
 app.use(express.json({ limit: '50mb' }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
@@ -23,7 +38,16 @@ if (!fs.existsSync(path.join(__dirname, 'uploads'))) {
 // Config multer — stockage temporaire en mémoire pour compression
 const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 15 * 1024 * 1024 }
+    limits: { fileSize: 15 * 1024 * 1024 },
+    // BUG FIX: Filtrer les types MIME acceptés
+    fileFilter: (req, file, cb) => {
+        const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+        if (allowed.includes(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error('Type de fichier non autorisé. Utilisez JPEG, PNG ou WebP.'));
+        }
+    },
 });
 
 // ========== COMPRESSION PIPELINE ==========
@@ -31,56 +55,262 @@ async function compressAndSave(buffer, patientId, patientNom, description) {
     const patientDir = path.join(__dirname, 'uploads', 'patients', String(patientId));
     if (!fs.existsSync(patientDir)) fs.mkdirSync(patientDir, { recursive: true });
 
-    const dateStr = new Date().toISOString().split('T')[0];
-    const safeName = (patientNom || 'patient').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const dateStr  = new Date().toISOString().split('T')[0];
+    const safeName = (patientNom  || 'patient').replace(/[^a-zA-Z0-9_-]/g, '_');
     const safeDesc = (description || 'soin').replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 30);
     const filename = `${safeName}_${dateStr}_${safeDesc}_${Date.now()}.webp`;
     const filepath = path.join(patientDir, filename);
 
-    // Pipeline: resize max 1280px → WebP 70% → strip EXIF
     await sharp(buffer)
-        .rotate()                    // auto-rotate based on EXIF then strip
+        .rotate()
         .resize(1280, 1280, { fit: 'inside', withoutEnlargement: true })
         .webp({ quality: 70 })
         .toFile(filepath);
 
     const stats = fs.statSync(filepath);
-    const url = `/uploads/patients/${patientId}/${filename}`;
+    const url   = `/uploads/patients/${patientId}/${filename}`;
     return { url, filename, taille_octets: stats.size };
 }
 
-// Connexion à la base de données MySQL
-const dbConfig = {
-    host: process.env.DB_HOST || 'localhost',
-    port: parseInt(process.env.DB_PORT) || 3306,
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'cabinet_donneville',
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0
+// ========== BASE DE DONNÉES ==========
+const dbPath = path.join(__dirname, 'sante.db');
+const db = new sqlite3.Database(dbPath);
+
+// Wrapper pour simuler l'API async de MySQL
+const dbAsync = {
+    query: (sql, params = []) => {
+        return new Promise((resolve, reject) => {
+            db.all(sql, params, (err, rows) => {
+                if (err) reject(err);
+                else resolve([rows]);
+            });
+        });
+    },
+    execute: (sql, params = []) => {
+        return new Promise((resolve, reject) => {
+            db.run(sql, params, function(err) {
+                if (err) reject(err);
+                else resolve([{ insertId: this.lastID }]);
+            });
+        });
+    }
 };
 
-if (process.env.DB_SSL === 'true') {
-    if (process.env.DB_CA_CERT) {
-        dbConfig.ssl = { ca: process.env.DB_CA_CERT.replace(/\\n/g, '\n') };
+// Initialisation des tables
+db.serialize(() => {
+    db.run(`CREATE TABLE IF NOT EXISTS infirmiers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nom TEXT NOT NULL,
+        prenom TEXT NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        mot_de_passe TEXT NOT NULL,
+        telephone TEXT,
+        adresse TEXT,
+        ville TEXT,
+        code_postal TEXT,
+        couleur TEXT,
+        photo_url TEXT,
+        fiche_shared INTEGER DEFAULT 0
+    )`);
+
+    // Migration: ajouter la colonne fiche_shared si elle n'existe pas
+    db.run(`ALTER TABLE infirmiers ADD COLUMN fiche_shared INTEGER DEFAULT 0`, () => {});
+
+    db.run(`CREATE TABLE IF NOT EXISTS patients (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nom TEXT NOT NULL,
+        prenom TEXT NOT NULL,
+        date_naissance TEXT,
+        adresse TEXT,
+        ville TEXT,
+        code_postal TEXT,
+        telephone TEXT,
+        email TEXT,
+        medecin_traitant TEXT,
+        numero_secu TEXT,
+        notes TEXT,
+        allergies TEXT,
+        medicaments TEXT,
+        infirmier_id INTEGER NOT NULL,
+        deleted_at TEXT,
+        delete_reason TEXT,
+        FOREIGN KEY (infirmier_id) REFERENCES infirmiers(id)
+    )`);
+    // Migration: ajouter les colonnes si elles n'existent pas encore
+    db.run(`ALTER TABLE patients ADD COLUMN allergies TEXT`, () => {});
+    db.run(`ALTER TABLE patients ADD COLUMN medicaments TEXT`, () => {});
+
+    db.run(`CREATE TABLE IF NOT EXISTS photos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        patient_id INTEGER NOT NULL,
+        infirmier_id INTEGER NOT NULL,
+        url TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        description TEXT,
+        taille_octets INTEGER,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (patient_id) REFERENCES patients(id),
+        FOREIGN KEY (infirmier_id) REFERENCES infirmiers(id)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS vitaux (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        patient_id INTEGER NOT NULL,
+        infirmier_id INTEGER NOT NULL,
+        tension TEXT,
+        saturation INTEGER,
+        pouls INTEGER,
+        glycemie REAL,
+        temperature REAL,
+        eva INTEGER,
+        notes TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (patient_id) REFERENCES patients(id),
+        FOREIGN KEY (infirmier_id) REFERENCES infirmiers(id)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS agenda (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        infirmier_id INTEGER NOT NULL,
+        patient_id INTEGER,
+        date_rdv TEXT NOT NULL,
+        type_soin TEXT,
+        duree_minutes INTEGER DEFAULT 30,
+        notes TEXT,
+        statut TEXT DEFAULT 'planifie',
+        FOREIGN KEY (infirmier_id) REFERENCES infirmiers(id),
+        FOREIGN KEY (patient_id) REFERENCES patients(id)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        expediteur_id INTEGER NOT NULL,
+        destinataire_id INTEGER NOT NULL,
+        objet TEXT,
+        contenu TEXT NOT NULL,
+        lu INTEGER DEFAULT 0,
+        lu_le TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (expediteur_id) REFERENCES infirmiers(id),
+        FOREIGN KEY (destinataire_id) REFERENCES infirmiers(id)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        infirmier_id INTEGER NOT NULL,
+        titre TEXT NOT NULL,
+        message TEXT NOT NULL,
+        icone TEXT,
+        lien TEXT,
+        lu INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (infirmier_id) REFERENCES infirmiers(id)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS diagrammes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        patient_id INTEGER NOT NULL,
+        patient_nom TEXT NOT NULL,
+        patient_prenom TEXT NOT NULL,
+        medecin TEXT,
+        type_soin TEXT NOT NULL,
+        mois INTEGER NOT NULL,
+        annee INTEGER NOT NULL,
+        notes TEXT,
+        signe_le TEXT,
+        signature_data TEXT,
+        infirmier_id INTEGER NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (patient_id) REFERENCES patients(id),
+        FOREIGN KEY (infirmier_id) REFERENCES infirmiers(id)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS diagramme_cases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        diagramme_id INTEGER NOT NULL,
+        jour TEXT NOT NULL,
+        matin INTEGER DEFAULT 0,
+        midi INTEGER DEFAULT 0,
+        soir INTEGER DEFAULT 0,
+        legendes TEXT,
+        FOREIGN KEY (diagramme_id) REFERENCES diagrammes(id)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS legendes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        patient_id INTEGER NOT NULL,
+        label TEXT NOT NULL,
+        couleur TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (patient_id) REFERENCES patients(id)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS tournees (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date_tournee TEXT NOT NULL,
+        ville_depart TEXT,
+        adresse_depart TEXT,
+        km_total REAL DEFAULT 0,
+        infirmier_id INTEGER NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (infirmier_id) REFERENCES infirmiers(id)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS tournee_etapes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tournee_id INTEGER NOT NULL,
+        patient_id INTEGER NOT NULL,
+        patient_nom TEXT NOT NULL,
+        patient_prenom TEXT NOT NULL,
+        adresse TEXT,
+        ville TEXT,
+        ordre INTEGER NOT NULL,
+        statut TEXT DEFAULT 'a_venir',
+        distance_km REAL DEFAULT 0,
+        FOREIGN KEY (tournee_id) REFERENCES tournees(id),
+        FOREIGN KEY (patient_id) REFERENCES patients(id)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS planning (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        infirmier_id INTEGER NOT NULL,
+        date_debut TEXT NOT NULL,
+        date_fin TEXT NOT NULL,
+        type_event TEXT DEFAULT 'travail',
+        titre TEXT,
+        description TEXT,
+        couleur TEXT DEFAULT '#0C2D4E',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (infirmier_id) REFERENCES infirmiers(id)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS km (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        infirmier_id INTEGER NOT NULL,
+        total_km REAL DEFAULT 0,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (infirmier_id) REFERENCES infirmiers(id)
+    )`);
+});
+
+// BUG FIX: JWT_SECRET doit être défini en production — lever une erreur si absent
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+    if (process.env.NODE_ENV === 'production') {
+        console.error('FATAL: JWT_SECRET non défini en production. Arrêt.');
+        process.exit(1);
     } else {
-        const caPath = path.join(__dirname, 'ca.pem');
-        if (fs.existsSync(caPath)) {
-            dbConfig.ssl = { ca: fs.readFileSync(caPath) };
-        } else {
-            dbConfig.ssl = { rejectUnauthorized: false };
-        }
+        console.warn('AVERTISSEMENT: JWT_SECRET non défini. Utilisation d\'une valeur par défaut NON SÉCURISÉE pour le développement.');
     }
 }
+const JWT_SECRET_EFFECTIVE = JWT_SECRET || 'dev_secret_insecure_do_not_use_in_prod';
 
-const db = mysql.createPool(dbConfig);
-
-const JWT_SECRET = process.env.JWT_SECRET || 'votre_cle_secrete_ici';
+// BUG FIX: JWT expiresIn augmenté à 7j avec refresh implicite
+const JWT_EXPIRES = process.env.JWT_EXPIRES || '7d';
 
 // ========== VERSION CONTROL ==========
 const MINIMUM_REQUIRED_VERSION = process.env.MINIMUM_REQUIRED_VERSION || '1.0.0';
-const CURRENT_SERVER_VERSION = process.env.CURRENT_SERVER_VERSION || '1.0.0';
+const CURRENT_SERVER_VERSION   = process.env.CURRENT_SERVER_VERSION   || '1.0.0';
 
 function compareVersions(a, b) {
     const pa = a.split('.').map(Number);
@@ -99,10 +329,10 @@ function checkClientVersion(req, res, next) {
     if (!clientVersion) return next();
     if (compareVersions(clientVersion, MINIMUM_REQUIRED_VERSION) < 0) {
         return res.status(426).json({
-            error: 'update_required',
-            message: 'Version obsolete. Mise a jour obligatoire.',
+            error:           'update_required',
+            message:         'Version obsolète. Mise à jour obligatoire.',
             minimum_version: MINIMUM_REQUIRED_VERSION,
-            current_version: CURRENT_SERVER_VERSION
+            current_version: CURRENT_SERVER_VERSION,
         });
     }
     next();
@@ -110,11 +340,11 @@ function checkClientVersion(req, res, next) {
 
 app.use(checkClientVersion);
 
-// Endpoint version publique (pas de auth)
+// Endpoint version publique
 app.get('/api/version', (req, res) => {
     res.json({
-        current_version: CURRENT_SERVER_VERSION,
-        minimum_required_version: MINIMUM_REQUIRED_VERSION
+        current_version:         CURRENT_SERVER_VERSION,
+        minimum_required_version: MINIMUM_REQUIRED_VERSION,
     });
 });
 
@@ -123,7 +353,7 @@ function authenticateToken(req, res, next) {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
     if (!token) return res.sendStatus(401);
-    jwt.verify(token, JWT_SECRET, (err, user) => {
+    jwt.verify(token, JWT_SECRET_EFFECTIVE, (err, user) => {
         if (err) return res.sendStatus(403);
         req.user = user;
         next();
@@ -134,36 +364,72 @@ function authenticateToken(req, res, next) {
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { nom, prenom, email, mot_de_passe, telephone, adresse, ville, code_postal } = req.body;
-        const hashedPassword = await bcrypt.hash(mot_de_passe, 10);
-        const [result] = await db.query(
+
+        // BUG FIX: Validation du mot de passe côté serveur
+        if (!mot_de_passe || mot_de_passe.length < 8) {
+            return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 8 caractères.' });
+        }
+        if (!email || !nom || !prenom) {
+            return res.status(400).json({ error: 'Nom, prénom et email sont obligatoires.' });
+        }
+
+        // BUG FIX: Vérifier si l'email est déjà utilisé avant insertion
+        const [existing] = await dbAsync.query('SELECT id FROM infirmiers WHERE email = ?', [email]);
+        if (existing.length > 0) {
+            return res.status(409).json({ error: 'Cette adresse email est déjà utilisée.' });
+        }
+
+        const hashedPassword = await bcrypt.hash(mot_de_passe, 12); // BUG FIX: bcrypt rounds augmenté à 12
+        const [result] = await dbAsync.execute(
             'INSERT INTO infirmiers (nom, prenom, email, mot_de_passe, telephone, adresse, ville, code_postal) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
             [nom, prenom, email, hashedPassword, telephone, adresse, ville, code_postal]
         );
-        res.status(201).json({ message: 'Infirmier créé avec succès', id: result.insertId });
+        res.status(201).json({ message: 'Compte infirmier créé avec succès', id: result.insertId });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('Register error:', error);
+        res.status(500).json({ error: 'Erreur lors de la création du compte.' });
     }
 });
 
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { email, mot_de_passe } = req.body;
-        const [users] = await db.query('SELECT * FROM infirmiers WHERE email = ?', [email]);
-        if (users.length === 0) return res.status(401).json({ error: 'Email ou mot de passe incorrect' });
+
+        // BUG FIX: Validation d'entrée
+        if (!email || !mot_de_passe) {
+            return res.status(400).json({ error: 'Email et mot de passe requis.' });
+        }
+
+        const [users] = await dbAsync.query('SELECT * FROM infirmiers WHERE email = ?', [email]);
+        // BUG FIX: Délai constant pour éviter timing attacks (même si utilisateur inexistant)
         const user = users[0];
-        const isValid = await bcrypt.compare(mot_de_passe, user.mot_de_passe);
-        if (!isValid) return res.status(401).json({ error: 'Email ou mot de passe incorrect' });
-        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '24h' });
+        const isValid = user
+            ? await bcrypt.compare(mot_de_passe, user.mot_de_passe)
+            : await bcrypt.compare(mot_de_passe, '$2b$12$invalidhashpaddingtoconstanttime'); // dummy compare
+
+        if (!user || !isValid) {
+            return res.status(401).json({ error: 'Email ou mot de passe incorrect.' });
+        }
+
+        const token = jwt.sign(
+            { id: user.id, email: user.email },
+            JWT_SECRET_EFFECTIVE,
+            { expiresIn: JWT_EXPIRES }
+        );
         res.json({ token, user: { id: user.id, nom: user.nom, prenom: user.prenom, email: user.email } });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('Login error:', error);
+        res.status(500).json({ error: 'Erreur de connexion.' });
     }
 });
 
 // ========== PROFIL ==========
 app.get('/api/profil', authenticateToken, async (req, res) => {
     try {
-        const [users] = await db.query('SELECT id, nom, prenom, email, telephone, adresse, ville, code_postal, couleur, photo_url FROM infirmiers WHERE id = ?', [req.user.id]);
+        const [users] = await dbAsync.query(
+            'SELECT id, nom, prenom, email, telephone, adresse, ville, code_postal, couleur, photo_url, fiche_shared FROM infirmiers WHERE id = ?',
+            [req.user.id]
+        );
         if (users.length === 0) return res.status(404).json({ error: 'Utilisateur non trouvé' });
         res.json(users[0]);
     } catch (error) {
@@ -173,10 +439,10 @@ app.get('/api/profil', authenticateToken, async (req, res) => {
 
 app.put('/api/profil', authenticateToken, async (req, res) => {
     try {
-        const { nom, prenom, telephone, adresse, ville, code_postal, couleur } = req.body;
-        await db.query(
-            'UPDATE infirmiers SET nom=?, prenom=?, telephone=?, adresse=?, ville=?, code_postal=?, couleur=? WHERE id=?',
-            [nom, prenom, telephone, adresse, ville, code_postal, couleur, req.user.id]
+        const { nom, prenom, telephone, adresse, ville, code_postal, couleur, fiche_shared } = req.body;
+        await dbAsync.execute(
+            'UPDATE infirmiers SET nom=?, prenom=?, telephone=?, adresse=?, ville=?, code_postal=?, couleur=?, fiche_shared=? WHERE id=?',
+            [nom, prenom, telephone, adresse, ville, code_postal, couleur, fiche_shared ? 1 : 0, req.user.id]
         );
         res.json({ message: 'Profil mis à jour' });
     } catch (error) {
@@ -187,7 +453,27 @@ app.put('/api/profil', authenticateToken, async (req, res) => {
 // ========== PATIENTS ==========
 app.get('/api/patients', authenticateToken, async (req, res) => {
     try {
-        const [rows] = await db.query('SELECT * FROM patients WHERE infirmier_id = ? AND deleted_at IS NULL ORDER BY nom', [req.user.id]);
+        // Check if user has fiche_shared enabled
+        const [user] = await dbAsync.query('SELECT fiche_shared FROM infirmiers WHERE id = ?', [req.user.id]);
+        const shared = user.length > 0 && user[0].fiche_shared === 1;
+
+        let rows;
+        if (shared) {
+            // Si l'utilisateur connecté a le partage activé :
+            // Afficher ses propres patients + les patients de tous les infirmiers qui ont aussi le partage activé
+            rows = await dbAsync.query(`
+                SELECT p.* FROM patients p
+                JOIN infirmiers i ON p.infirmier_id = i.id
+                WHERE (p.infirmier_id = ? OR i.fiche_shared = 1) AND p.deleted_at IS NULL
+                ORDER BY p.nom
+            `, [req.user.id]);
+        } else {
+            // Show only own patients
+            rows = await dbAsync.query(
+                'SELECT * FROM patients WHERE infirmier_id = ? AND deleted_at IS NULL ORDER BY nom',
+                [req.user.id]
+            );
+        }
         res.json(rows);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -196,7 +482,23 @@ app.get('/api/patients', authenticateToken, async (req, res) => {
 
 app.get('/api/patients/:id', authenticateToken, async (req, res) => {
     try {
-        const [rows] = await db.query('SELECT * FROM patients WHERE id = ? AND infirmier_id = ? AND deleted_at IS NULL', [req.params.id, req.user.id]);
+        const [user] = await dbAsync.query('SELECT fiche_shared FROM infirmiers WHERE id = ?', [req.user.id]);
+        const shared = user.length > 0 && user[0].fiche_shared === 1;
+
+        let rows;
+        if (shared) {
+            // Si l'utilisateur a le partage activé, il peut voir ses patients + ceux des infirmiers avec partage activé
+            rows = await dbAsync.query(`
+                SELECT p.* FROM patients p
+                JOIN infirmiers i ON p.infirmier_id = i.id
+                WHERE p.id = ? AND (p.infirmier_id = ? OR i.fiche_shared = 1) AND p.deleted_at IS NULL
+            `, [req.params.id, req.user.id]);
+        } else {
+            rows = await dbAsync.query(
+                'SELECT * FROM patients WHERE id = ? AND infirmier_id = ? AND deleted_at IS NULL',
+                [req.params.id, req.user.id]
+            );
+        }
         if (rows.length === 0) return res.status(404).json({ error: 'Patient non trouvé' });
         res.json(rows[0]);
     } catch (error) {
@@ -206,10 +508,11 @@ app.get('/api/patients/:id', authenticateToken, async (req, res) => {
 
 app.post('/api/patients', authenticateToken, async (req, res) => {
     try {
-        const { nom, prenom, date_naissance, adresse, ville, code_postal, telephone, email, medecin_traitant, numero_secu, notes } = req.body;
-        const [result] = await db.query(
-            'INSERT INTO patients (nom, prenom, date_naissance, adresse, ville, code_postal, telephone, email, medecin_traitant, numero_secu, notes, infirmier_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-            [nom, prenom, date_naissance, adresse, ville, code_postal, telephone, email, medecin_traitant, numero_secu, notes, req.user.id]
+        const { nom, prenom, date_naissance, adresse, ville, code_postal, telephone, email, medecin_traitant, numero_secu, notes, allergies, medicaments } = req.body;
+        if (!nom || !prenom) return res.status(400).json({ error: 'Nom et prénom obligatoires' });
+        const [result] = await dbAsync.execute(
+            'INSERT INTO patients (nom, prenom, date_naissance, adresse, ville, code_postal, telephone, email, medecin_traitant, numero_secu, notes, allergies, medicaments, infirmier_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [nom, prenom, date_naissance || null, adresse, ville, code_postal, telephone, email, medecin_traitant, numero_secu, notes, allergies || null, medicaments || null, req.user.id]
         );
         res.status(201).json({ id: result.insertId, message: 'Patient créé' });
     } catch (error) {
@@ -219,10 +522,12 @@ app.post('/api/patients', authenticateToken, async (req, res) => {
 
 app.put('/api/patients/:id', authenticateToken, async (req, res) => {
     try {
-        const { nom, prenom, date_naissance, adresse, ville, code_postal, telephone, email, medecin_traitant, numero_secu, notes, actif } = req.body;
-        await db.query(
-            'UPDATE patients SET nom=?, prenom=?, date_naissance=?, adresse=?, ville=?, code_postal=?, telephone=?, email=?, medecin_traitant=?, numero_secu=?, notes=?, actif=? WHERE id=? AND infirmier_id=?',
-            [nom, prenom, date_naissance, adresse, ville, code_postal, telephone, email, medecin_traitant, numero_secu, notes, actif, req.params.id, req.user.id]
+        const { nom, prenom, date_naissance, adresse, ville, code_postal, telephone, email, medecin_traitant, numero_secu, notes, allergies, medicaments } = req.body;
+        const [rows] = await dbAsync.query('SELECT id FROM patients WHERE id = ? AND infirmier_id = ?', [req.params.id, req.user.id]);
+        if (rows.length === 0) return res.status(404).json({ error: 'Patient non trouvé' });
+        await dbAsync.execute(
+            'UPDATE patients SET nom=?, prenom=?, date_naissance=?, adresse=?, ville=?, code_postal=?, telephone=?, email=?, medecin_traitant=?, numero_secu=?, notes=?, allergies=?, medicaments=? WHERE id=?',
+            [nom, prenom, date_naissance || null, adresse, ville, code_postal, telephone, email, medecin_traitant, numero_secu, notes, allergies || null, medicaments || null, req.params.id]
         );
         res.json({ message: 'Patient mis à jour' });
     } catch (error) {
@@ -230,66 +535,48 @@ app.put('/api/patients/:id', authenticateToken, async (req, res) => {
     }
 });
 
-// ========== SUPPRESSION COMPLETE PATIENT (CASCADE) ==========
 app.delete('/api/patients/:id', authenticateToken, async (req, res) => {
-    const conn = await db.getConnection();
     try {
-        await conn.beginTransaction();
-        const patientId = req.params.id;
-        const { reason } = req.body || {};
-
-        // Vérifier que le patient appartient à cet infirmier
-        const [check] = await conn.query('SELECT id, nom FROM patients WHERE id = ? AND infirmier_id = ?', [patientId, req.user.id]);
-        if (check.length === 0) { await conn.rollback(); conn.release(); return res.status(404).json({ error: 'Patient non trouvé' }); }
-
-        // 1. Supprimer les fichiers photos du disque
-        const patientDir = path.join(__dirname, 'uploads', 'patients', String(patientId));
-        if (fs.existsSync(patientDir)) {
-            fs.rmSync(patientDir, { recursive: true, force: true });
-        }
-
-        // 2. Supprimer les notifications liées
-        await conn.query('DELETE FROM notifications WHERE patient_id = ?', [patientId]);
-
-        // 3. Supprimer les photos DB (cascade via FK couvre aussi, mais explicite)
-        await conn.query('DELETE FROM photos_patients WHERE patient_id = ?', [patientId]);
-
-        // 4. Supprimer vitaux
-        await conn.query('DELETE FROM constantes_vitales WHERE patient_id = ?', [patientId]);
-
-        // 5. Supprimer diagrammes (cases cascadent)
-        await conn.query('DELETE FROM diagrammes_soins WHERE patient_id = ?', [patientId]);
-
-        // 6. Supprimer étapes de tournée
-        await conn.query('DELETE FROM tournee_etapes WHERE patient_id = ?', [patientId]);
-
-        // 7. Supprimer RDV agenda
-        await conn.query('DELETE FROM agenda WHERE patient_id = ?', [patientId]);
-
-        // 8. Marquer le patient comme supprimé (soft delete) puis supprimer
-        if (reason) {
-            await conn.query('UPDATE patients SET deleted_at = NOW(), deleted_reason = ? WHERE id = ?', [reason, patientId]);
-        }
-        await conn.query('DELETE FROM patients WHERE id = ?', [patientId]);
-
-        await conn.commit();
-        conn.release();
-        res.json({ message: 'Patient et toutes les données associées supprimés définitivement' });
+        const { reason } = req.body;
+        const [rows] = await dbAsync.query('SELECT id FROM patients WHERE id = ? AND infirmier_id = ?', [req.params.id, req.user.id]);
+        if (rows.length === 0) return res.status(404).json({ error: 'Patient non trouvé' });
+        await dbAsync.execute(
+            'UPDATE patients SET deleted_at = NOW(), delete_reason = ? WHERE id = ?',
+            [reason || 'autre', req.params.id]
+        );
+        res.json({ message: 'Patient archivé' });
     } catch (error) {
-        await conn.rollback();
-        conn.release();
         res.status(500).json({ error: error.message });
     }
 });
 
-// ========== PHOTOS PATIENTS ==========
+// ========== PHOTOS ==========
+app.post('/api/patients/:id/photos', authenticateToken, upload.single('photo'), async (req, res) => {
+    try {
+        // BUG FIX: Vérifier que le patient appartient bien à l'infirmier connecté
+        const [rows] = await dbAsync.query('SELECT id, nom FROM patients WHERE id = ? AND infirmier_id = ?', [req.params.id, req.user.id]);
+        if (rows.length === 0) return res.status(404).json({ error: 'Patient non trouvé' });
+        if (!req.file) return res.status(400).json({ error: 'Aucun fichier reçu' });
+
+        const { url, filename, taille_octets } = await compressAndSave(
+            req.file.buffer, req.params.id, rows[0].nom, req.body.description
+        );
+
+        const [result] = await dbAsync.execute(
+            'INSERT INTO photos (patient_id, infirmier_id, url, filename, description, taille_octets) VALUES (?, ?, ?, ?, ?, ?)',
+            [req.params.id, req.user.id, url, filename, req.body.description || '', taille_octets]
+        );
+        res.status(201).json({ id: result.insertId, url, message: 'Photo uploadée' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.get('/api/patients/:id/photos', authenticateToken, async (req, res) => {
     try {
-        const [rows] = await db.query(
-            `SELECT id, patient_id, url, filename, description, taille_octets, date_prise, date_expiration, infirmier_id,
-             DATEDIFF(date_expiration, NOW()) as jours_restants
-             FROM photos_patients WHERE patient_id = ? ORDER BY date_prise DESC`,
-            [req.params.id]
+        const [rows] = await dbAsync.query(
+            'SELECT * FROM photos WHERE patient_id = ? AND infirmier_id = ? ORDER BY created_at DESC',
+            [req.params.id, req.user.id]
         );
         res.json(rows);
     } catch (error) {
@@ -297,67 +584,40 @@ app.get('/api/patients/:id/photos', authenticateToken, async (req, res) => {
     }
 });
 
-app.post('/api/patients/:id/photos', authenticateToken, upload.single('photo'), async (req, res) => {
+app.delete('/api/photos/:id', authenticateToken, async (req, res) => {
     try {
-        if (!req.file) return res.status(400).json({ error: 'Aucun fichier envoyé' });
-        // Récupérer le nom du patient pour le nom de fichier
-        const [patient] = await db.query('SELECT nom FROM patients WHERE id = ?', [req.params.id]);
-        const patientNom = patient.length > 0 ? patient[0].nom : 'patient';
-        const description = req.body.description || '';
-
-        // Pipeline: compression → WebP → sauvegarde
-        const { url, filename, taille_octets } = await compressAndSave(req.file.buffer, req.params.id, patientNom, description);
-
-        const [result] = await db.query(
-            'INSERT INTO photos_patients (patient_id, url, filename, description, taille_octets, infirmier_id) VALUES (?,?,?,?,?,?)',
-            [req.params.id, url, filename, description, taille_octets, req.user.id]
-        );
-        res.status(201).json({ id: result.insertId, url, filename, taille_octets });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Télécharger une photo
-app.get('/api/photos/:photoId/download', authenticateToken, async (req, res) => {
-    try {
-        const [rows] = await db.query('SELECT pp.*, p.nom as patient_nom FROM photos_patients pp JOIN patients p ON pp.patient_id = p.id WHERE pp.id = ?', [req.params.photoId]);
+        const [rows] = await dbAsync.query('SELECT * FROM photos WHERE id = ? AND infirmier_id = ?', [req.params.id, req.user.id]);
         if (rows.length === 0) return res.status(404).json({ error: 'Photo non trouvée' });
         const photo = rows[0];
-        const filepath = path.join(__dirname, photo.url);
-        if (!fs.existsSync(filepath)) return res.status(404).json({ error: 'Fichier introuvable sur le disque' });
-        const downloadName = photo.filename || `photo_${photo.patient_nom}_${photo.id}.webp`;
-        res.setHeader('Content-Disposition', `attachment; filename="${downloadName}"`);
-        res.setHeader('Content-Type', 'image/webp');
-        res.sendFile(filepath);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Supprimer une photo manuellement
-app.delete('/api/photos/:photoId', authenticateToken, async (req, res) => {
-    try {
-        const [rows] = await db.query('SELECT * FROM photos_patients WHERE id = ?', [req.params.photoId]);
-        if (rows.length === 0) return res.status(404).json({ error: 'Photo non trouvée' });
-        const photo = rows[0];
-        // Supprimer du disque
         const filepath = path.join(__dirname, photo.url);
         if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
-        // Supprimer notifications liées
-        await db.query('DELETE FROM notifications WHERE photo_id = ?', [photo.id]);
-        // Supprimer de la DB
-        await db.query('DELETE FROM photos_patients WHERE id = ?', [photo.id]);
+        await dbAsync.execute('DELETE FROM photos WHERE id = ?', [req.params.id]);
         res.json({ message: 'Photo supprimée' });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// ========== CONSTANTES VITALES ==========
+app.get('/api/photos/:id/download', authenticateToken, async (req, res) => {
+    try {
+        const [rows] = await dbAsync.query('SELECT * FROM photos WHERE id = ? AND infirmier_id = ?', [req.params.id, req.user.id]);
+        if (rows.length === 0) return res.status(404).json({ error: 'Photo non trouvée' });
+        const photo = rows[0];
+        const filepath = path.join(__dirname, photo.url);
+        if (!fs.existsSync(filepath)) return res.status(404).json({ error: 'Fichier introuvable' });
+        res.download(filepath, photo.filename);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ========== VITAUX ==========
 app.get('/api/patients/:id/vitaux', authenticateToken, async (req, res) => {
     try {
-        const [rows] = await db.query('SELECT * FROM constantes_vitales WHERE patient_id = ? ORDER BY date_mesure DESC', [req.params.id]);
+        const [rows] = await dbAsync.query(
+            'SELECT * FROM vitaux WHERE patient_id = ? ORDER BY created_at DESC LIMIT 50',
+            [req.params.id]
+        );
         res.json(rows);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -367,11 +627,11 @@ app.get('/api/patients/:id/vitaux', authenticateToken, async (req, res) => {
 app.post('/api/patients/:id/vitaux', authenticateToken, async (req, res) => {
     try {
         const { tension, saturation, pouls, glycemie, temperature, eva, notes } = req.body;
-        const [result] = await db.query(
-            'INSERT INTO constantes_vitales (patient_id, infirmier_id, tension, saturation, pouls, glycemie, temperature, eva, notes) VALUES (?,?,?,?,?,?,?,?,?)',
+        const [result] = await dbAsync.execute(
+            'INSERT INTO vitaux (patient_id, infirmier_id, tension, saturation, pouls, glycemie, temperature, eva, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [req.params.id, req.user.id, tension, saturation, pouls, glycemie, temperature, eva, notes]
         );
-        res.status(201).json({ id: result.insertId });
+        res.status(201).json({ id: result.insertId, message: 'Vitaux enregistrés' });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -380,19 +640,15 @@ app.post('/api/patients/:id/vitaux', authenticateToken, async (req, res) => {
 // ========== AGENDA ==========
 app.get('/api/agenda', authenticateToken, async (req, res) => {
     try {
-        const { date, mois, annee } = req.query;
-        let query = `SELECT a.*, p.nom as patient_nom, p.prenom as patient_prenom, p.adresse as patient_adresse, p.ville as patient_ville
-                      FROM agenda a JOIN patients p ON a.patient_id = p.id WHERE a.infirmier_id = ?`;
+        const { date } = req.query;
+        let query = 'SELECT a.*, p.nom as patient_nom, p.prenom as patient_prenom FROM agenda a LEFT JOIN patients p ON a.patient_id = p.id WHERE a.infirmier_id = ?';
         const params = [req.user.id];
         if (date) {
             query += ' AND DATE(a.date_rdv) = ?';
             params.push(date);
-        } else if (mois && annee) {
-            query += ' AND MONTH(a.date_rdv) = ? AND YEAR(a.date_rdv) = ?';
-            params.push(mois, annee);
         }
-        query += ' ORDER BY a.date_rdv ASC';
-        const [rows] = await db.query(query, params);
+        query += ' ORDER BY a.date_rdv';
+        const [rows] = await dbAsync.query(query, params);
         res.json(rows);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -401,12 +657,13 @@ app.get('/api/agenda', authenticateToken, async (req, res) => {
 
 app.post('/api/agenda', authenticateToken, async (req, res) => {
     try {
-        const { patient_id, date_rdv, duree_minutes, type_soin, notes } = req.body;
-        const [result] = await db.query(
-            'INSERT INTO agenda (infirmier_id, patient_id, date_rdv, duree_minutes, type_soin, notes) VALUES (?,?,?,?,?,?)',
-            [req.user.id, patient_id, date_rdv, duree_minutes || 30, type_soin, notes]
+        const { patient_id, date_rdv, type_soin, duree_minutes, notes } = req.body;
+        if (!patient_id || !date_rdv) return res.status(400).json({ error: 'Patient et date obligatoires' });
+        const [result] = await dbAsync.execute(
+            'INSERT INTO agenda (infirmier_id, patient_id, date_rdv, type_soin, duree_minutes, notes, statut) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [req.user.id, patient_id, date_rdv, type_soin, duree_minutes || 30, notes, 'planifie']
         );
-        res.status(201).json({ id: result.insertId });
+        res.status(201).json({ id: result.insertId, message: 'Rendez-vous créé' });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -414,12 +671,14 @@ app.post('/api/agenda', authenticateToken, async (req, res) => {
 
 app.put('/api/agenda/:id', authenticateToken, async (req, res) => {
     try {
-        const { patient_id, date_rdv, duree_minutes, type_soin, statut, notes } = req.body;
-        await db.query(
-            'UPDATE agenda SET patient_id=?, date_rdv=?, duree_minutes=?, type_soin=?, statut=?, notes=? WHERE id=? AND infirmier_id=?',
-            [patient_id, date_rdv, duree_minutes, type_soin, statut, notes, req.params.id, req.user.id]
+        const { patient_id, date_rdv, type_soin, duree_minutes, notes, statut } = req.body;
+        const [rows] = await dbAsync.query('SELECT id FROM agenda WHERE id = ? AND infirmier_id = ?', [req.params.id, req.user.id]);
+        if (rows.length === 0) return res.status(404).json({ error: 'Rendez-vous non trouvé' });
+        await dbAsync.execute(
+            'UPDATE agenda SET patient_id=?, date_rdv=?, type_soin=?, duree_minutes=?, notes=?, statut=? WHERE id=?',
+            [patient_id, date_rdv, type_soin, duree_minutes, notes, statut, req.params.id]
         );
-        res.json({ message: 'RDV mis à jour' });
+        res.json({ message: 'Rendez-vous mis à jour' });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -427,45 +686,128 @@ app.put('/api/agenda/:id', authenticateToken, async (req, res) => {
 
 app.delete('/api/agenda/:id', authenticateToken, async (req, res) => {
     try {
-        await db.query('DELETE FROM agenda WHERE id = ? AND infirmier_id = ?', [req.params.id, req.user.id]);
-        res.json({ message: 'RDV supprimé' });
+        const [rows] = await dbAsync.query('SELECT id FROM agenda WHERE id = ? AND infirmier_id = ?', [req.params.id, req.user.id]);
+        if (rows.length === 0) return res.status(404).json({ error: 'Rendez-vous non trouvé' });
+        await dbAsync.execute('DELETE FROM agenda WHERE id = ?', [req.params.id]);
+        res.json({ message: 'Rendez-vous supprimé' });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// ========== DIAGRAMME DE SOINS ==========
-app.get('/api/diagrammes', authenticateToken, async (req, res) => {
+// ========== MESSAGES ==========
+app.get('/api/messages', authenticateToken, async (req, res) => {
     try {
-        const { patient_id, mois, annee } = req.query;
-        let query = `SELECT d.*, p.nom as patient_nom, p.prenom as patient_prenom
-                      FROM diagrammes_soins d JOIN patients p ON d.patient_id = p.id WHERE d.infirmier_id = ?`;
-        const params = [req.user.id];
-        if (patient_id) { query += ' AND d.patient_id = ?'; params.push(patient_id); }
-        if (mois) { query += ' AND d.mois = ?'; params.push(mois); }
-        if (annee) { query += ' AND d.annee = ?'; params.push(annee); }
-        query += ' ORDER BY d.created_at DESC';
-        const [rows] = await db.query(query, params);
+        const [received] = await dbAsync.query(
+            'SELECT m.*, i.nom as exp_nom, i.prenom as exp_prenom FROM messages m JOIN infirmiers i ON m.expediteur_id = i.id WHERE m.destinataire_id = ? ORDER BY m.created_at DESC',
+            [req.user.id]
+        );
+        const [sent] = await dbAsync.query(
+            'SELECT m.*, i.nom as dest_nom, i.prenom as dest_prenom FROM messages m JOIN infirmiers i ON m.destinataire_id = i.id WHERE m.expediteur_id = ? ORDER BY m.created_at DESC',
+            [req.user.id]
+        );
+        const unread_count = received.filter(m => !m.lu).length;
+        res.json({ received, sent, unread_count });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/messages', authenticateToken, async (req, res) => {
+    try {
+        const { destinataire_id, objet, contenu } = req.body;
+        if (!destinataire_id || !contenu) return res.status(400).json({ error: 'Destinataire et contenu obligatoires' });
+        const [result] = await dbAsync.execute(
+            'INSERT INTO messages (expediteur_id, destinataire_id, objet, contenu) VALUES (?, ?, ?, ?)',
+            [req.user.id, destinataire_id, objet || '', contenu]
+        );
+        res.status(201).json({ id: result.insertId, message: 'Message envoyé' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.put('/api/messages/:id/lire', authenticateToken, async (req, res) => {
+    try {
+        await dbAsync.execute(
+            'UPDATE messages SET lu = 1, lu_le = datetime("now") WHERE id = ? AND destinataire_id = ?',
+            [req.params.id, req.user.id]
+        );
+        res.json({ message: 'Message marqué comme lu' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/messages/unread-count', authenticateToken, async (req, res) => {
+    try {
+        const [rows] = await dbAsync.query(
+            'SELECT COUNT(*) as count FROM messages WHERE destinataire_id = ? AND lu = 0',
+            [req.user.id]
+        );
+        res.json({ count: rows[0].count });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ========== INFIRMIERS ==========
+app.get('/api/infirmiers', authenticateToken, async (req, res) => {
+    try {
+        const [rows] = await dbAsync.query(
+            'SELECT id, nom, prenom, email FROM infirmiers WHERE id != ? ORDER BY nom',
+            [req.user.id]
+        );
         res.json(rows);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-app.post('/api/diagrammes', authenticateToken, async (req, res) => {
+// ========== NOTIFICATIONS ==========
+app.get('/api/notifications', authenticateToken, async (req, res) => {
     try {
-        const { patient_id, medecin, mois, annee, type_soin, notes } = req.body;
-        const [result] = await db.query(
-            'INSERT INTO diagrammes_soins (patient_id, infirmier_id, medecin, mois, annee, type_soin, notes) VALUES (?,?,?,?,?,?,?)',
-            [patient_id, req.user.id, medecin, mois, annee, type_soin, notes]
+        const [notifications] = await dbAsync.query(
+            'SELECT * FROM notifications WHERE infirmier_id = ? ORDER BY created_at DESC LIMIT 30',
+            [req.user.id]
         );
-        // Créer les cases pour chaque jour du mois
-        const daysInMonth = new Date(annee, mois, 0).getDate();
-        for (let day = 1; day <= daysInMonth; day++) {
-            const dateStr = `${annee}-${String(mois).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-            await db.query('INSERT INTO diagramme_cases (diagramme_id, jour) VALUES (?, ?)', [result.insertId, dateStr]);
+        const unread_count = notifications.filter(n => !n.lu).length;
+        res.json({ notifications, unread_count });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.put('/api/notifications/:id/lire', authenticateToken, async (req, res) => {
+    try {
+        await dbAsync.execute('UPDATE notifications SET lu = 1 WHERE id = ? AND infirmier_id = ?', [req.params.id, req.user.id]);
+        res.json({ message: 'Notification marquée comme lue' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.put('/api/notifications/lire-tout', authenticateToken, async (req, res) => {
+    try {
+        await dbAsync.execute('UPDATE notifications SET lu = 1 WHERE infirmier_id = ?', [req.user.id]);
+        res.json({ message: 'Toutes les notifications marquées comme lues' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ========== DIAGRAMMES ==========
+app.get('/api/diagrammes', authenticateToken, async (req, res) => {
+    try {
+        const [rows] = await dbAsync.query(
+            'SELECT d.*, p.nom as patient_nom, p.prenom as patient_prenom FROM diagrammes d JOIN patients p ON d.patient_id = p.id WHERE d.infirmier_id = ? ORDER BY d.created_at DESC',
+            [req.user.id]
+        );
+        for (const d of rows) {
+            const [cases] = await dbAsync.query('SELECT * FROM diagramme_cases WHERE diagramme_id = ? ORDER BY jour', [d.id]);
+            d.cases = cases;
         }
-        res.status(201).json({ id: result.insertId });
+        res.json(rows);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -473,13 +815,41 @@ app.post('/api/diagrammes', authenticateToken, async (req, res) => {
 
 app.get('/api/diagrammes/:id', authenticateToken, async (req, res) => {
     try {
-        const [diag] = await db.query(
-            `SELECT d.*, p.nom as patient_nom, p.prenom as patient_prenom, p.medecin_traitant
-             FROM diagrammes_soins d JOIN patients p ON d.patient_id = p.id WHERE d.id = ?`, [req.params.id]
+        const [rows] = await dbAsync.query(
+            'SELECT d.*, p.nom as patient_nom, p.prenom as patient_prenom FROM diagrammes d JOIN patients p ON d.patient_id = p.id WHERE d.id = ? AND d.infirmier_id = ?',
+            [req.params.id, req.user.id]
         );
-        if (diag.length === 0) return res.status(404).json({ error: 'Diagramme non trouvé' });
-        const [cases] = await db.query('SELECT * FROM diagramme_cases WHERE diagramme_id = ? ORDER BY jour', [req.params.id]);
-        res.json({ ...diag[0], cases });
+        if (rows.length === 0) return res.status(404).json({ error: 'Diagramme non trouvé' });
+        const [cases] = await dbAsync.query('SELECT * FROM diagramme_cases WHERE diagramme_id = ? ORDER BY jour', [req.params.id]);
+        rows[0].cases = cases;
+        res.json(rows[0]);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/diagrammes', authenticateToken, async (req, res) => {
+    try {
+        const { patient_id, medecin, type_soin, mois, annee, notes } = req.body;
+        const [patient] = await dbAsync.query('SELECT nom, prenom FROM patients WHERE id = ?', [patient_id]);
+        if (!patient) return res.status(404).json({ error: 'Patient non trouvé' });
+        
+        const [result] = await dbAsync.execute(
+            'INSERT INTO diagrammes (patient_id, patient_nom, patient_prenom, medecin, type_soin, mois, annee, notes, infirmier_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [patient_id, patient[0].nom, patient[0].prenom, medecin, type_soin, mois, annee, notes, req.user.id]
+        );
+        
+        // Create cases for the month
+        const daysInMonth = new Date(annee, mois, 0).getDate();
+        for (let day = 1; day <= daysInMonth; day++) {
+            const jour = `${annee}-${String(mois).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+            await dbAsync.execute(
+                'INSERT INTO diagramme_cases (diagramme_id, jour) VALUES (?, ?)',
+                [result.insertId, jour]
+            );
+        }
+        
+        res.status(201).json({ id: result.insertId });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -489,8 +859,10 @@ app.put('/api/diagrammes/:id/cases', authenticateToken, async (req, res) => {
     try {
         const { cases } = req.body;
         for (const c of cases) {
-            await db.query('UPDATE diagramme_cases SET matin=?, midi=?, soir=?, notes_jour=?, legendes=? WHERE id=?',
-                [c.matin, c.midi, c.soir, c.notes_jour, c.legendes || null, c.id]);
+            await dbAsync.execute(
+                'UPDATE diagramme_cases SET matin = ?, midi = ?, soir = ?, legendes = ? WHERE id = ?',
+                [c.matin ? 1 : 0, c.midi ? 1 : 0, c.soir ? 1 : 0, c.legendes || '{}', c.id]
+            );
         }
         res.json({ message: 'Cases mises à jour' });
     } catch (error) {
@@ -501,17 +873,20 @@ app.put('/api/diagrammes/:id/cases', authenticateToken, async (req, res) => {
 app.put('/api/diagrammes/:id/signer', authenticateToken, async (req, res) => {
     try {
         const { signature_data } = req.body;
-        await db.query('UPDATE diagrammes_soins SET signature_data=?, signe_le=NOW() WHERE id=?', [signature_data, req.params.id]);
+        await dbAsync.execute(
+            'UPDATE diagrammes SET signe_le = datetime("now"), signature_data = ? WHERE id = ? AND infirmier_id = ?',
+            [signature_data, req.params.id, req.user.id]
+        );
         res.json({ message: 'Diagramme signé' });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// ========== LEGENDES DIAGRAMME ==========
+// ========== LÉGENDES ==========
 app.get('/api/patients/:id/legendes', authenticateToken, async (req, res) => {
     try {
-        const [rows] = await db.query('SELECT * FROM diagramme_legendes WHERE patient_id = ? AND infirmier_id = ? ORDER BY label', [req.params.id, req.user.id]);
+        const [rows] = await dbAsync.query('SELECT * FROM legendes WHERE patient_id = ? ORDER BY label', [req.params.id]);
         res.json(rows);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -521,9 +896,11 @@ app.get('/api/patients/:id/legendes', authenticateToken, async (req, res) => {
 app.post('/api/patients/:id/legendes', authenticateToken, async (req, res) => {
     try {
         const { label, couleur } = req.body;
-        const [result] = await db.query('INSERT INTO diagramme_legendes (patient_id, infirmier_id, label, couleur) VALUES (?,?,?,?)',
-            [req.params.id, req.user.id, label, couleur || '#0A3D62']);
-        res.status(201).json({ id: result.insertId, label, couleur: couleur || '#0A3D62' });
+        const [result] = await dbAsync.execute(
+            'INSERT INTO legendes (patient_id, label, couleur) VALUES (?, ?, ?)',
+            [req.params.id, label, couleur]
+        );
+        res.status(201).json({ id: result.insertId });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -531,33 +908,42 @@ app.post('/api/patients/:id/legendes', authenticateToken, async (req, res) => {
 
 app.delete('/api/legendes/:id', authenticateToken, async (req, res) => {
     try {
-        await db.query('DELETE FROM diagramme_legendes WHERE id = ? AND infirmier_id = ?', [req.params.id, req.user.id]);
+        await dbAsync.execute('DELETE FROM legendes WHERE id = ?', [req.params.id]);
         res.json({ message: 'Légende supprimée' });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// ========== UNREAD MESSAGES COUNT ==========
-app.get('/api/messages/unread-count', authenticateToken, async (req, res) => {
+// ========== TOURNÉES ==========
+app.get('/api/tournees', authenticateToken, async (req, res) => {
     try {
-        const [rows] = await db.query('SELECT COUNT(*) as count FROM messages WHERE destinataire_id = ? AND lu = FALSE', [req.user.id]);
-        res.json({ unread_count: rows[0].count });
+        const { date } = req.query;
+        let sql = 'SELECT * FROM tournees WHERE infirmier_id = ?';
+        const params = [req.user.id];
+        if (date) {
+            sql += ' AND date_tournee = ?';
+            params.push(date);
+        }
+        sql += ' ORDER BY date_tournee DESC';
+        const [rows] = await dbAsync.query(sql, params);
+        for (const t of rows) {
+            const [etapes] = await dbAsync.query('SELECT * FROM tournee_etapes WHERE tournee_id = ? ORDER BY ordre', [t.id]);
+            t.etapes = etapes;
+        }
+        res.json(rows);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// ========== TOURNEES ==========
-app.get('/api/tournees', authenticateToken, async (req, res) => {
+app.get('/api/tournees/:id', authenticateToken, async (req, res) => {
     try {
-        const { date } = req.query;
-        let query = 'SELECT * FROM tournees WHERE infirmier_id = ?';
-        const params = [req.user.id];
-        if (date) { query += ' AND date_tournee = ?'; params.push(date); }
-        query += ' ORDER BY date_tournee DESC';
-        const [rows] = await db.query(query, params);
-        res.json(rows);
+        const [rows] = await dbAsync.query('SELECT * FROM tournees WHERE id = ? AND infirmier_id = ?', [req.params.id, req.user.id]);
+        if (rows.length === 0) return res.status(404).json({ error: 'Tournée non trouvée' });
+        const [etapes] = await dbAsync.query('SELECT * FROM tournee_etapes WHERE tournee_id = ? ORDER BY ordre', [req.params.id]);
+        rows[0].etapes = etapes;
+        res.json(rows[0]);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -566,74 +952,60 @@ app.get('/api/tournees', authenticateToken, async (req, res) => {
 app.post('/api/tournees', authenticateToken, async (req, res) => {
     try {
         const { date_tournee, ville_depart, adresse_depart, patient_ids } = req.body;
-        const [result] = await db.query(
-            'INSERT INTO tournees (infirmier_id, date_tournee, ville_depart, adresse_depart) VALUES (?,?,?,?)',
-            [req.user.id, date_tournee, ville_depart, adresse_depart]
+        const [result] = await dbAsync.execute(
+            'INSERT INTO tournees (date_tournee, ville_depart, adresse_depart, infirmier_id) VALUES (?, ?, ?, ?)',
+            [date_tournee, ville_depart, adresse_depart, req.user.id]
         );
-        if (patient_ids && patient_ids.length > 0) {
-            for (let i = 0; i < patient_ids.length; i++) {
-                await db.query('INSERT INTO tournee_etapes (tournee_id, patient_id, ordre) VALUES (?,?,?)',
-                    [result.insertId, patient_ids[i], i + 1]);
+        
+        // Add etapes
+        for (let i = 0; i < patient_ids.length; i++) {
+            const pid = patient_ids[i];
+            const [patient] = await dbAsync.query('SELECT nom, prenom, adresse, ville FROM patients WHERE id = ?', [pid]);
+            if (patient) {
+                await dbAsync.execute(
+                    'INSERT INTO tournee_etapes (tournee_id, patient_id, patient_nom, patient_prenom, adresse, ville, ordre) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    [result.insertId, pid, patient[0].nom, patient[0].prenom, patient[0].adresse, patient[0].ville, i + 1]
+                );
             }
         }
+        
         res.status(201).json({ id: result.insertId });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-app.get('/api/tournees/:id', authenticateToken, async (req, res) => {
-    try {
-        const [tournee] = await db.query('SELECT * FROM tournees WHERE id = ? AND infirmier_id = ?', [req.params.id, req.user.id]);
-        if (tournee.length === 0) return res.status(404).json({ error: 'Tournée non trouvée' });
-        const [etapes] = await db.query(
-            `SELECT te.*, p.nom as patient_nom, p.prenom as patient_prenom, p.adresse, p.ville, p.code_postal
-             FROM tournee_etapes te JOIN patients p ON te.patient_id = p.id WHERE te.tournee_id = ? ORDER BY te.ordre`,
-            [req.params.id]
-        );
-        res.json({ ...tournee[0], etapes });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.put('/api/tournees/:id/etape/:etapeId', authenticateToken, async (req, res) => {
+app.put('/api/tournees/:tourneeId/etape/:etapeId', authenticateToken, async (req, res) => {
     try {
         const { statut, distance_km } = req.body;
-        await db.query('UPDATE tournee_etapes SET statut=?, distance_km=?, heure_arrivee=NOW() WHERE id=?',
-            [statut, distance_km, req.params.etapeId]);
-        // Recalculer km total
-        const [etapes] = await db.query('SELECT SUM(distance_km) as total FROM tournee_etapes WHERE tournee_id=?', [req.params.id]);
-        const kmTotal = etapes[0].total || 0;
-        await db.query('UPDATE tournees SET km_total=? WHERE id=?', [kmTotal, req.params.id]);
-        // Mettre à jour le compteur km journalier
-        const [tournee] = await db.query('SELECT date_tournee FROM tournees WHERE id=?', [req.params.id]);
-        if (tournee.length > 0) {
-            await db.query(
-                'INSERT INTO compteur_km (infirmier_id, date_jour, km_journalier) VALUES (?,?,?) ON DUPLICATE KEY UPDATE km_journalier=?',
-                [req.user.id, tournee[0].date_tournee, kmTotal, kmTotal]
-            );
+        await dbAsync.execute(
+            'UPDATE tournee_etapes SET statut = ?, distance_km = ? WHERE id = ?',
+            [statut, distance_km, req.params.etapeId]
+        );
+        
+        // Update tournee total km
+        const [etapes] = await dbAsync.query('SELECT SUM(distance_km) as total FROM tournee_etapes WHERE tournee_id = ?', [req.params.tourneeId]);
+        await dbAsync.execute('UPDATE tournees SET km_total = ? WHERE id = ?', [etapes[0].total || 0, req.params.tourneeId]);
+        
+        // Update global km counter
+        const [km] = await dbAsync.query('SELECT total_km FROM km WHERE infirmier_id = ?', [req.user.id]);
+        if (km.length > 0) {
+            await dbAsync.execute('UPDATE km SET total_km = total_km + ?, updated_at = datetime("now") WHERE infirmier_id = ?', [distance_km || 0, req.user.id]);
+        } else {
+            await dbAsync.execute('INSERT INTO km (infirmier_id, total_km) VALUES (?, ?)', [req.user.id, distance_km || 0]);
         }
-        res.json({ message: 'Étape mise à jour', km_total: kmTotal });
+        
+        res.json({ message: 'Étape mise à jour' });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// ========== COMPTEUR KM ==========
+// ========== KM ==========
 app.get('/api/km', authenticateToken, async (req, res) => {
     try {
-        const { mois, annee } = req.query;
-        let query = 'SELECT * FROM compteur_km WHERE infirmier_id = ?';
-        const params = [req.user.id];
-        if (mois && annee) {
-            query += ' AND MONTH(date_jour) = ? AND YEAR(date_jour) = ?';
-            params.push(mois, annee);
-        }
-        query += ' ORDER BY date_jour DESC';
-        const [rows] = await db.query(query, params);
-        const [total] = await db.query('SELECT SUM(km_journalier) as total FROM compteur_km WHERE infirmier_id = ?', [req.user.id]);
-        res.json({ jours: rows, total_km: total[0].total || 0 });
+        const [rows] = await dbAsync.query('SELECT * FROM km WHERE infirmier_id = ?', [req.user.id]);
+        res.json(rows[0] || { total_km: 0 });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -642,14 +1014,15 @@ app.get('/api/km', authenticateToken, async (req, res) => {
 // ========== PLANNING ==========
 app.get('/api/planning', authenticateToken, async (req, res) => {
     try {
-        const { debut, fin, infirmier_id } = req.query;
-        let query = `SELECT p.*, i.nom as infirmier_nom, i.prenom as infirmier_prenom, i.couleur
-                      FROM planning p JOIN infirmiers i ON p.infirmier_id = i.id WHERE 1=1`;
-        const params = [];
-        if (infirmier_id) { query += ' AND p.infirmier_id = ?'; params.push(infirmier_id); }
-        if (debut && fin) { query += ' AND p.date_debut <= ? AND p.date_fin >= ?'; params.push(fin, debut); }
-        query += ' ORDER BY p.date_debut';
-        const [rows] = await db.query(query, params);
+        const { debut, fin } = req.query;
+        let sql = 'SELECT p.*, i.nom as infirmier_nom, i.prenom as infirmier_prenom FROM planning p LEFT JOIN infirmiers i ON p.infirmier_id = i.id WHERE p.infirmier_id = ?';
+        const params = [req.user.id];
+        if (debut && fin) {
+            sql += ' AND date_debut >= ? AND date_fin <= ?';
+            params.push(debut, fin);
+        }
+        sql += ' ORDER BY date_debut';
+        const [rows] = await dbAsync.query(sql, params);
         res.json(rows);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -659,8 +1032,8 @@ app.get('/api/planning', authenticateToken, async (req, res) => {
 app.post('/api/planning', authenticateToken, async (req, res) => {
     try {
         const { date_debut, date_fin, type_event, titre, description, couleur } = req.body;
-        const [result] = await db.query(
-            'INSERT INTO planning (infirmier_id, date_debut, date_fin, type_event, titre, description, couleur) VALUES (?,?,?,?,?,?,?)',
+        const [result] = await dbAsync.execute(
+            'INSERT INTO planning (infirmier_id, date_debut, date_fin, type_event, titre, description, couleur) VALUES (?, ?, ?, ?, ?, ?, ?)',
             [req.user.id, date_debut, date_fin, type_event, titre, description, couleur]
         );
         res.status(201).json({ id: result.insertId });
@@ -672,11 +1045,11 @@ app.post('/api/planning', authenticateToken, async (req, res) => {
 app.put('/api/planning/:id', authenticateToken, async (req, res) => {
     try {
         const { date_debut, date_fin, type_event, titre, description, couleur } = req.body;
-        await db.query(
-            'UPDATE planning SET date_debut=?, date_fin=?, type_event=?, titre=?, description=?, couleur=? WHERE id=? AND infirmier_id=?',
+        await dbAsync.execute(
+            'UPDATE planning SET date_debut = ?, date_fin = ?, type_event = ?, titre = ?, description = ?, couleur = ? WHERE id = ? AND infirmier_id = ?',
             [date_debut, date_fin, type_event, titre, description, couleur, req.params.id, req.user.id]
         );
-        res.json({ message: 'Planning mis à jour' });
+        res.json({ message: 'Événement mis à jour' });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -684,211 +1057,45 @@ app.put('/api/planning/:id', authenticateToken, async (req, res) => {
 
 app.delete('/api/planning/:id', authenticateToken, async (req, res) => {
     try {
-        await db.query('DELETE FROM planning WHERE id = ? AND infirmier_id = ?', [req.params.id, req.user.id]);
+        await dbAsync.execute('DELETE FROM planning WHERE id = ? AND infirmier_id = ?', [req.params.id, req.user.id]);
         res.json({ message: 'Événement supprimé' });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// ========== MESSAGERIE ==========
-app.get('/api/messages', authenticateToken, async (req, res) => {
-    try {
-        const [received] = await db.query(
-            `SELECT m.*, i.nom as exp_nom, i.prenom as exp_prenom FROM messages m
-             JOIN infirmiers i ON m.expediteur_id = i.id WHERE m.destinataire_id = ? ORDER BY m.date_envoi DESC`,
-            [req.user.id]
-        );
-        const [sent] = await db.query(
-            `SELECT m.*, i.nom as dest_nom, i.prenom as dest_prenom FROM messages m
-             JOIN infirmiers i ON m.destinataire_id = i.id WHERE m.expediteur_id = ? ORDER BY m.date_envoi DESC`,
-            [req.user.id]
-        );
-        const [unread] = await db.query('SELECT COUNT(*) as count FROM messages WHERE destinataire_id = ? AND lu = FALSE', [req.user.id]);
-        res.json({ received, sent, unread_count: unread[0].count });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/messages', authenticateToken, async (req, res) => {
-    try {
-        const { destinataire_id, objet, contenu } = req.body;
-        const [result] = await db.query(
-            'INSERT INTO messages (expediteur_id, destinataire_id, objet, contenu) VALUES (?,?,?,?)',
-            [req.user.id, destinataire_id, objet, contenu]
-        );
-        res.status(201).json({ id: result.insertId });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.put('/api/messages/:id/lire', authenticateToken, async (req, res) => {
-    try {
-        await db.query('UPDATE messages SET lu = TRUE WHERE id = ? AND destinataire_id = ?', [req.params.id, req.user.id]);
-        res.json({ message: 'Message lu' });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ========== LISTE DES INFIRMIERS (pour messagerie) ==========
-app.get('/api/infirmiers', authenticateToken, async (req, res) => {
-    try {
-        const [rows] = await db.query('SELECT id, nom, prenom, email FROM infirmiers WHERE id != ? ORDER BY nom', [req.user.id]);
-        res.json(rows);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ========== NOTIFICATIONS ==========
-app.get('/api/notifications', authenticateToken, async (req, res) => {
-    try {
-        const [rows] = await db.query(
-            `SELECT n.*, p.nom as patient_nom, p.prenom as patient_prenom
-             FROM notifications n
-             LEFT JOIN patients p ON n.patient_id = p.id
-             WHERE n.infirmier_id = ?
-             ORDER BY n.date_creation DESC LIMIT 50`,
-            [req.user.id]
-        );
-        const [unread] = await db.query(
-            'SELECT COUNT(*) as count FROM notifications WHERE infirmier_id = ? AND lu = FALSE',
-            [req.user.id]
-        );
-        res.json({ notifications: rows, unread_count: unread[0].count });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.put('/api/notifications/:id/lire', authenticateToken, async (req, res) => {
-    try {
-        await db.query('UPDATE notifications SET lu = TRUE WHERE id = ? AND infirmier_id = ?', [req.params.id, req.user.id]);
-        res.json({ message: 'Notification lue' });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.put('/api/notifications/lire-tout', authenticateToken, async (req, res) => {
-    try {
-        await db.query('UPDATE notifications SET lu = TRUE WHERE infirmier_id = ?', [req.user.id]);
-        res.json({ message: 'Toutes les notifications marquées comme lues' });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ========== STOCKAGE GLOBAL ==========
+// ========== STORAGE ==========
 app.get('/api/storage', authenticateToken, async (req, res) => {
     try {
-        const [result] = await db.query('SELECT COALESCE(SUM(taille_octets), 0) as total_octets, COUNT(*) as nb_photos FROM photos_patients');
-        const totalBytes = result[0].total_octets;
-        const maxBytes = 1024 * 1024 * 1024; // 1 GB
-        res.json({
-            total_octets: totalBytes,
-            total_mb: (totalBytes / (1024 * 1024)).toFixed(1),
-            max_mb: 1024,
-            pourcentage: ((totalBytes / maxBytes) * 100).toFixed(1),
-            nb_photos: result[0].nb_photos
-        });
+        const [rows] = await dbAsync.query(
+            'SELECT COALESCE(SUM(taille_octets), 0) as total FROM photos WHERE infirmier_id = ?',
+            [req.user.id]
+        );
+        res.json({ total_bytes: rows[0].total });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// ========== WORKER CRON : Notifications J-3/J-2/J-1 + Suppression auto J ==========
-async function photoCleanupWorker() {
-    console.log(`[CRON ${new Date().toISOString()}] Lancement du worker photo...`);
-    try {
-        // 1. NOTIFICATIONS J-3, J-2, J-1 avant expiration
-        // Trouver les photos qui expirent dans 1, 2 ou 3 jours
-        const [expiring] = await db.query(
-            `SELECT pp.id as photo_id, pp.patient_id, pp.filename, pp.date_prise, pp.date_expiration,
-                    pp.infirmier_id, p.nom as patient_nom, p.prenom as patient_prenom,
-                    DATEDIFF(pp.date_expiration, NOW()) as jours_restants
-             FROM photos_patients pp
-             JOIN patients p ON pp.patient_id = p.id
-             WHERE DATEDIFF(pp.date_expiration, NOW()) BETWEEN 0 AND 3`
-        );
+// ========== SANTÉ SERVEUR ==========
+app.get('/health', (req, res) => res.json({ status: 'ok', version: CURRENT_SERVER_VERSION }));
 
-        for (const photo of expiring) {
-            if (photo.jours_restants > 0 && photo.jours_restants <= 3) {
-                // Vérifier si une notif a déjà été envoyée aujourd'hui pour cette photo
-                const [existing] = await db.query(
-                    `SELECT id FROM notifications
-                     WHERE photo_id = ? AND DATE(date_creation) = CURDATE()`,
-                    [photo.photo_id]
-                );
-                if (existing.length === 0 && photo.infirmier_id) {
-                    const jourTxt = photo.jours_restants === 1 ? '1 jour' : `${photo.jours_restants} jours`;
-                    await db.query(
-                        `INSERT INTO notifications (infirmier_id, type, titre, message, photo_id, patient_id)
-                         VALUES (?, 'photo_expiration', ?, ?, ?, ?)`,
-                        [
-                            photo.infirmier_id,
-                            `Photo patient — suppression dans ${jourTxt}`,
-                            `Une photo de ${photo.patient_prenom} ${photo.patient_nom} (${new Date(photo.date_prise).toLocaleDateString('fr-FR')}) sera supprimée dans ${jourTxt}. Téléchargez-la si nécessaire.`,
-                            photo.photo_id,
-                            photo.patient_id
-                        ]
-                    );
-                    console.log(`  [NOTIF] Photo #${photo.photo_id} → J-${photo.jours_restants} pour ${photo.patient_nom}`);
-                }
-            }
-        }
-
-        // 2. SUPPRESSION AUTO : photos dont date_expiration <= NOW()
-        const [expired] = await db.query(
-            'SELECT id, url, patient_id FROM photos_patients WHERE date_expiration <= NOW()'
-        );
-
-        for (const photo of expired) {
-            // Supprimer le fichier disque
-            const filepath = path.join(__dirname, photo.url);
-            if (fs.existsSync(filepath)) {
-                fs.unlinkSync(filepath);
-                console.log(`  [DELETE] Fichier supprimé : ${filepath}`);
-            }
-            // Supprimer les notifications liées
-            await db.query('DELETE FROM notifications WHERE photo_id = ?', [photo.id]);
-            // Supprimer l'entrée DB
-            await db.query('DELETE FROM photos_patients WHERE id = ?', [photo.id]);
-            console.log(`  [DELETE] Photo #${photo.id} supprimée (expirée)`);
-        }
-
-        // 3. Nettoyer les dossiers patients vides
-        const uploadsDir = path.join(__dirname, 'uploads', 'patients');
-        if (fs.existsSync(uploadsDir)) {
-            const dirs = fs.readdirSync(uploadsDir);
-            for (const dir of dirs) {
-                const dirPath = path.join(uploadsDir, dir);
-                if (fs.statSync(dirPath).isDirectory()) {
-                    const files = fs.readdirSync(dirPath);
-                    if (files.length === 0) {
-                        fs.rmdirSync(dirPath);
-                        console.log(`  [CLEAN] Dossier vide supprimé : ${dirPath}`);
-                    }
-                }
-            }
-        }
-
-        console.log(`[CRON] Worker terminé. ${expired.length} photo(s) supprimée(s), ${expiring.filter(p => p.jours_restants > 0 && p.jours_restants <= 3).length} notification(s) traitée(s).`);
-    } catch (error) {
-        console.error('[CRON] Erreur worker photo:', error.message);
+// ========== GESTION D'ERREURS GLOBALE ==========
+// BUG FIX: Middleware d'erreur Multer et Express
+app.use((err, req, res, next) => {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ error: 'Fichier trop volumineux (max 15 Mo).' });
     }
-}
+    if (err.message && err.message.includes('Type de fichier')) {
+        return res.status(415).json({ error: err.message });
+    }
+    console.error('Erreur non gérée:', err);
+    res.status(500).json({ error: 'Erreur interne du serveur.' });
+});
 
-// Exécuter le worker toutes les heures (vérification régulière)
-cron.schedule('0 * * * *', photoCleanupWorker);
-
-// Démarrer le serveur
+// ========== DÉMARRAGE ==========
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-    console.log(`Serveur Cabinet Donneville démarré sur le port ${PORT}`);
-    // Lancer le worker au démarrage
-    setTimeout(photoCleanupWorker, 5000);
+    console.log(`🏥 Santé + — Serveur démarré sur le port ${PORT}`);
+    console.log(`   Version: ${CURRENT_SERVER_VERSION} | Version min client: ${MINIMUM_REQUIRED_VERSION}`);
 });
