@@ -95,19 +95,13 @@ const dbAsync = {
 };
 
 // ========== HELPER ACCÈS PATIENT ==========
-// Retourne le patient si l'utilisateur y a accès (propriétaire OU partage mutuel activé), sinon null
+// Retourne le patient si l'utilisateur y a accès (tout utilisateur authentifié peut accéder à tout patient), sinon null
 async function canAccessPatient(userId, patientId) {
     const [rows] = await dbAsync.query(`
         SELECT p.* FROM patients p
-        JOIN infirmiers i   ON p.infirmier_id = i.id
-        JOIN infirmiers me  ON me.id = ?
         WHERE p.id = ?
           AND p.deleted_at IS NULL
-          AND (
-            p.infirmier_id = ?
-            OR (i.fiche_shared = 1 AND me.fiche_shared = 1)
-          )
-    `, [userId, patientId, userId]);
+    `, [patientId]);
     return rows.length > 0 ? rows[0] : null;
 }
 
@@ -477,28 +471,12 @@ app.put('/api/profil', authenticateToken, async (req, res) => {
 // ========== PATIENTS ==========
 app.get('/api/patients', authenticateToken, async (req, res) => {
     try {
-        // Check if user has fiche_shared enabled
-        const [user] = await dbAsync.query('SELECT fiche_shared FROM infirmiers WHERE id = ?', [req.user.id]);
-        const shared = user.length > 0 && user[0].fiche_shared === 1;
-
-        let rows;
-        if (shared) {
-            // Si l'utilisateur connecté a le partage activé :
-            // Afficher ses propres patients + les patients de tous les infirmiers qui ont aussi le partage activé
-            rows = await dbAsync.query(`
-                SELECT p.* FROM patients p
-                JOIN infirmiers i ON p.infirmier_id = i.id
-                WHERE (p.infirmier_id = ? OR i.fiche_shared = 1) AND p.deleted_at IS NULL
-                ORDER BY p.nom
-            `, [req.user.id]);
-        } else {
-            // Show only own patients
-            rows = await dbAsync.query(
-                'SELECT * FROM patients WHERE infirmier_id = ? AND deleted_at IS NULL ORDER BY nom',
-                [req.user.id]
-            );
-        }
-        res.json(rows[0] || []);
+        // Tous les utilisateurs authentifiés voient tous les patients (partage global)
+        const [rows] = await dbAsync.query(
+            'SELECT * FROM patients WHERE deleted_at IS NULL ORDER BY nom',
+            []
+        );
+        res.json(rows || []);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -506,22 +484,11 @@ app.get('/api/patients', authenticateToken, async (req, res) => {
 
 app.get('/api/patients/:id', authenticateToken, async (req, res) => {
     try {
-        const [user] = await dbAsync.query('SELECT fiche_shared FROM infirmiers WHERE id = ?', [req.user.id]);
-        const shared = user.length > 0 && user[0].fiche_shared === 1;
-
-        let rows;
-        if (shared) {
-            [rows] = await dbAsync.query(`
-                SELECT p.* FROM patients p
-                JOIN infirmiers i ON p.infirmier_id = i.id
-                WHERE p.id = ? AND (p.infirmier_id = ? OR i.fiche_shared = 1) AND p.deleted_at IS NULL
-            `, [req.params.id, req.user.id]);
-        } else {
-            [rows] = await dbAsync.query(
-                'SELECT * FROM patients WHERE id = ? AND infirmier_id = ? AND deleted_at IS NULL',
-                [req.params.id, req.user.id]
-            );
-        }
+        // Tous les utilisateurs authentifiés peuvent accéder à la fiche de n'importe quel patient
+        const [rows] = await dbAsync.query(
+            'SELECT * FROM patients WHERE id = ? AND deleted_at IS NULL',
+            [req.params.id]
+        );
         if (!rows || rows.length === 0) return res.status(404).json({ error: 'Patient non trouvé' });
         res.json(rows[0]);
     } catch (error) {
@@ -832,26 +799,13 @@ app.put('/api/notifications/lire-tout', authenticateToken, async (req, res) => {
 // ========== DIAGRAMMES ==========
 app.get('/api/diagrammes', authenticateToken, async (req, res) => {
     try {
-        // FIX: inclure les diagrammes des patients partagés
-        const [user] = await dbAsync.query('SELECT fiche_shared FROM infirmiers WHERE id = ?', [req.user.id]);
-        const shared = user.length > 0 && user[0].fiche_shared === 1;
-
-        let rows;
-        if (shared) {
-            [rows] = await dbAsync.query(`
-                SELECT d.*, p.nom as patient_nom, p.prenom as patient_prenom
-                FROM diagrammes d
-                JOIN patients p   ON d.patient_id = p.id
-                JOIN infirmiers i ON p.infirmier_id = i.id
-                WHERE (d.infirmier_id = ? OR i.fiche_shared = 1)
-                ORDER BY d.created_at DESC
-            `, [req.user.id]);
-        } else {
-            [rows] = await dbAsync.query(
-                'SELECT d.*, p.nom as patient_nom, p.prenom as patient_prenom FROM diagrammes d JOIN patients p ON d.patient_id = p.id WHERE d.infirmier_id = ? ORDER BY d.created_at DESC',
-                [req.user.id]
-            );
-        }
+        // Tous les utilisateurs authentifiés voient tous les diagrammes (partage global)
+        const [rows] = await dbAsync.query(`
+            SELECT d.*, p.nom as patient_nom, p.prenom as patient_prenom
+            FROM diagrammes d
+            JOIN patients p ON d.patient_id = p.id
+            ORDER BY d.created_at DESC
+        `, []);
         for (const d of rows) {
             const [cases] = await dbAsync.query('SELECT * FROM diagramme_cases WHERE diagramme_id = ? ORDER BY jour', [d.id]);
             d.cases = cases;
@@ -864,25 +818,13 @@ app.get('/api/diagrammes', authenticateToken, async (req, res) => {
 
 app.get('/api/diagrammes/:id', authenticateToken, async (req, res) => {
     try {
-        // FIX: accès partagé aux diagrammes
-        const [user] = await dbAsync.query('SELECT fiche_shared FROM infirmiers WHERE id = ?', [req.user.id]);
-        const shared = user.length > 0 && user[0].fiche_shared === 1;
-
-        let rows;
-        if (shared) {
-            [rows] = await dbAsync.query(`
-                SELECT d.*, p.nom as patient_nom, p.prenom as patient_prenom
-                FROM diagrammes d
-                JOIN patients p   ON d.patient_id = p.id
-                JOIN infirmiers i ON p.infirmier_id = i.id
-                WHERE d.id = ? AND (d.infirmier_id = ? OR i.fiche_shared = 1)
-            `, [req.params.id, req.user.id]);
-        } else {
-            [rows] = await dbAsync.query(
-                'SELECT d.*, p.nom as patient_nom, p.prenom as patient_prenom FROM diagrammes d JOIN patients p ON d.patient_id = p.id WHERE d.id = ? AND d.infirmier_id = ?',
-                [req.params.id, req.user.id]
-            );
-        }
+        // Tous les utilisateurs authentifiés peuvent accéder à n'importe quel diagramme
+        const [rows] = await dbAsync.query(`
+            SELECT d.*, p.nom as patient_nom, p.prenom as patient_prenom
+            FROM diagrammes d
+            JOIN patients p ON d.patient_id = p.id
+            WHERE d.id = ?
+        `, [req.params.id]);
         if (rows.length === 0) return res.status(404).json({ error: 'Diagramme non trouvé' });
         const [cases] = await dbAsync.query('SELECT * FROM diagramme_cases WHERE diagramme_id = ? ORDER BY jour', [req.params.id]);
         rows[0].cases = cases;
