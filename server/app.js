@@ -94,6 +94,32 @@ const dbAsync = {
     }
 };
 
+// ========== HELPER ACCÈS PATIENT ==========
+// Retourne le patient si l'utilisateur y a accès (propriétaire OU partage mutuel activé), sinon null
+async function canAccessPatient(userId, patientId) {
+    const [rows] = await dbAsync.query(`
+        SELECT p.* FROM patients p
+        JOIN infirmiers i   ON p.infirmier_id = i.id
+        JOIN infirmiers me  ON me.id = ?
+        WHERE p.id = ?
+          AND p.deleted_at IS NULL
+          AND (
+            p.infirmier_id = ?
+            OR (i.fiche_shared = 1 AND me.fiche_shared = 1)
+          )
+    `, [userId, patientId, userId]);
+    return rows.length > 0 ? rows[0] : null;
+}
+
+// Retourne true si l'utilisateur est propriétaire du patient
+async function ownsPatient(userId, patientId) {
+    const [rows] = await dbAsync.query(
+        'SELECT id FROM patients WHERE id = ? AND infirmier_id = ? AND deleted_at IS NULL',
+        [patientId, userId]
+    );
+    return rows.length > 0;
+}
+
 // Initialisation des tables
 db.serialize(() => {
     db.run(`CREATE TABLE IF NOT EXISTS infirmiers (
@@ -520,8 +546,9 @@ app.post('/api/patients', authenticateToken, async (req, res) => {
 app.put('/api/patients/:id', authenticateToken, async (req, res) => {
     try {
         const { nom, prenom, date_naissance, adresse, ville, code_postal, telephone, email, medecin_traitant, numero_secu, notes, allergies, medicaments } = req.body;
-        const [rows] = await dbAsync.query('SELECT id FROM patients WHERE id = ? AND infirmier_id = ?', [req.params.id, req.user.id]);
-        if (rows.length === 0) return res.status(404).json({ error: 'Patient non trouvé' });
+        // FIX: autoriser la modification si l'utilisateur est propriétaire OU a un accès partagé
+        const patient = await canAccessPatient(req.user.id, req.params.id);
+        if (!patient) return res.status(404).json({ error: 'Patient non trouvé ou accès non autorisé' });
         await dbAsync.execute(
             'UPDATE patients SET nom=?, prenom=?, date_naissance=?, adresse=?, ville=?, code_postal=?, telephone=?, email=?, medecin_traitant=?, numero_secu=?, notes=?, allergies=?, medicaments=? WHERE id=?',
             [nom, prenom, date_naissance || null, adresse, ville, code_postal, telephone, email, medecin_traitant, numero_secu, notes, allergies || null, medicaments || null, req.params.id]
@@ -551,13 +578,13 @@ app.delete('/api/patients/:id', authenticateToken, async (req, res) => {
 // ========== PHOTOS ==========
 app.post('/api/patients/:id/photos', authenticateToken, upload.single('photo'), async (req, res) => {
     try {
-        // BUG FIX: Vérifier que le patient appartient bien à l'infirmier connecté
-        const [rows] = await dbAsync.query('SELECT id, nom FROM patients WHERE id = ? AND infirmier_id = ?', [req.params.id, req.user.id]);
-        if (rows.length === 0) return res.status(404).json({ error: 'Patient non trouvé' });
+        // FIX: autoriser l'upload si l'utilisateur a accès au patient (propriétaire ou partage)
+        const patient = await canAccessPatient(req.user.id, req.params.id);
+        if (!patient) return res.status(404).json({ error: 'Patient non trouvé ou accès non autorisé' });
         if (!req.file) return res.status(400).json({ error: 'Aucun fichier reçu' });
 
         const { url, filename, taille_octets } = await compressAndSave(
-            req.file.buffer, req.params.id, rows[0].nom, req.body.description
+            req.file.buffer, req.params.id, patient.nom, req.body.description
         );
 
         const [result] = await dbAsync.execute(
@@ -572,9 +599,17 @@ app.post('/api/patients/:id/photos', authenticateToken, upload.single('photo'), 
 
 app.get('/api/patients/:id/photos', authenticateToken, async (req, res) => {
     try {
+        // FIX: vérifier l'accès au patient, puis retourner TOUTES les photos (toutes infirmières)
+        const patient = await canAccessPatient(req.user.id, req.params.id);
+        if (!patient) return res.status(404).json({ error: 'Patient non trouvé ou accès non autorisé' });
+
         const [rows] = await dbAsync.query(
-            'SELECT * FROM photos WHERE patient_id = ? AND infirmier_id = ? ORDER BY created_at DESC',
-            [req.params.id, req.user.id]
+            `SELECT ph.*, i.nom as infirmier_nom, i.prenom as infirmier_prenom
+             FROM photos ph
+             JOIN infirmiers i ON ph.infirmier_id = i.id
+             WHERE ph.patient_id = ?
+             ORDER BY ph.created_at DESC`,
+            [req.params.id]
         );
         res.json(rows);
     } catch (error) {
@@ -797,10 +832,26 @@ app.put('/api/notifications/lire-tout', authenticateToken, async (req, res) => {
 // ========== DIAGRAMMES ==========
 app.get('/api/diagrammes', authenticateToken, async (req, res) => {
     try {
-        const [rows] = await dbAsync.query(
-            'SELECT d.*, p.nom as patient_nom, p.prenom as patient_prenom FROM diagrammes d JOIN patients p ON d.patient_id = p.id WHERE d.infirmier_id = ? ORDER BY d.created_at DESC',
-            [req.user.id]
-        );
+        // FIX: inclure les diagrammes des patients partagés
+        const [user] = await dbAsync.query('SELECT fiche_shared FROM infirmiers WHERE id = ?', [req.user.id]);
+        const shared = user.length > 0 && user[0].fiche_shared === 1;
+
+        let rows;
+        if (shared) {
+            [rows] = await dbAsync.query(`
+                SELECT d.*, p.nom as patient_nom, p.prenom as patient_prenom
+                FROM diagrammes d
+                JOIN patients p   ON d.patient_id = p.id
+                JOIN infirmiers i ON p.infirmier_id = i.id
+                WHERE (d.infirmier_id = ? OR i.fiche_shared = 1)
+                ORDER BY d.created_at DESC
+            `, [req.user.id]);
+        } else {
+            [rows] = await dbAsync.query(
+                'SELECT d.*, p.nom as patient_nom, p.prenom as patient_prenom FROM diagrammes d JOIN patients p ON d.patient_id = p.id WHERE d.infirmier_id = ? ORDER BY d.created_at DESC',
+                [req.user.id]
+            );
+        }
         for (const d of rows) {
             const [cases] = await dbAsync.query('SELECT * FROM diagramme_cases WHERE diagramme_id = ? ORDER BY jour', [d.id]);
             d.cases = cases;
@@ -813,10 +864,25 @@ app.get('/api/diagrammes', authenticateToken, async (req, res) => {
 
 app.get('/api/diagrammes/:id', authenticateToken, async (req, res) => {
     try {
-        const [rows] = await dbAsync.query(
-            'SELECT d.*, p.nom as patient_nom, p.prenom as patient_prenom FROM diagrammes d JOIN patients p ON d.patient_id = p.id WHERE d.id = ? AND d.infirmier_id = ?',
-            [req.params.id, req.user.id]
-        );
+        // FIX: accès partagé aux diagrammes
+        const [user] = await dbAsync.query('SELECT fiche_shared FROM infirmiers WHERE id = ?', [req.user.id]);
+        const shared = user.length > 0 && user[0].fiche_shared === 1;
+
+        let rows;
+        if (shared) {
+            [rows] = await dbAsync.query(`
+                SELECT d.*, p.nom as patient_nom, p.prenom as patient_prenom
+                FROM diagrammes d
+                JOIN patients p   ON d.patient_id = p.id
+                JOIN infirmiers i ON p.infirmier_id = i.id
+                WHERE d.id = ? AND (d.infirmier_id = ? OR i.fiche_shared = 1)
+            `, [req.params.id, req.user.id]);
+        } else {
+            [rows] = await dbAsync.query(
+                'SELECT d.*, p.nom as patient_nom, p.prenom as patient_prenom FROM diagrammes d JOIN patients p ON d.patient_id = p.id WHERE d.id = ? AND d.infirmier_id = ?',
+                [req.params.id, req.user.id]
+            );
+        }
         if (rows.length === 0) return res.status(404).json({ error: 'Diagramme non trouvé' });
         const [cases] = await dbAsync.query('SELECT * FROM diagramme_cases WHERE diagramme_id = ? ORDER BY jour', [req.params.id]);
         rows[0].cases = cases;
@@ -829,12 +895,13 @@ app.get('/api/diagrammes/:id', authenticateToken, async (req, res) => {
 app.post('/api/diagrammes', authenticateToken, async (req, res) => {
     try {
         const { patient_id, medecin, type_soin, mois, annee, notes } = req.body;
-        const [patient] = await dbAsync.query('SELECT nom, prenom FROM patients WHERE id = ?', [patient_id]);
-        if (!patient) return res.status(404).json({ error: 'Patient non trouvé' });
+        // FIX: vérifier accès partagé pour créer un diagramme
+        const patient = await canAccessPatient(req.user.id, patient_id);
+        if (!patient) return res.status(404).json({ error: 'Patient non trouvé ou accès non autorisé' });
         
         const [result] = await dbAsync.execute(
             'INSERT INTO diagrammes (patient_id, patient_nom, patient_prenom, medecin, type_soin, mois, annee, notes, infirmier_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [patient_id, patient[0].nom, patient[0].prenom, medecin, type_soin, mois, annee, notes, req.user.id]
+            [patient_id, patient.nom, patient.prenom, medecin, type_soin, mois, annee, notes, req.user.id]
         );
         
         // Create cases for the month
@@ -856,6 +923,12 @@ app.post('/api/diagrammes', authenticateToken, async (req, res) => {
 app.put('/api/diagrammes/:id/cases', authenticateToken, async (req, res) => {
     try {
         const { cases } = req.body;
+        // FIX: vérifier que l'utilisateur a accès au diagramme (propriétaire ou partage)
+        const [diagramme] = await dbAsync.query('SELECT d.patient_id FROM diagrammes d WHERE d.id = ?', [req.params.id]);
+        if (!diagramme.length) return res.status(404).json({ error: 'Diagramme non trouvé' });
+        const patient = await canAccessPatient(req.user.id, diagramme[0].patient_id);
+        if (!patient) return res.status(403).json({ error: 'Accès non autorisé' });
+
         for (const c of cases) {
             await dbAsync.execute(
                 'UPDATE diagramme_cases SET matin = ?, midi = ?, soir = ?, legendes = ? WHERE id = ?',
@@ -871,9 +944,15 @@ app.put('/api/diagrammes/:id/cases', authenticateToken, async (req, res) => {
 app.put('/api/diagrammes/:id/signer', authenticateToken, async (req, res) => {
     try {
         const { signature_data } = req.body;
+        // FIX: vérifier accès partagé pour signer
+        const [diagramme] = await dbAsync.query('SELECT patient_id FROM diagrammes WHERE id = ?', [req.params.id]);
+        if (!diagramme.length) return res.status(404).json({ error: 'Diagramme non trouvé' });
+        const patient = await canAccessPatient(req.user.id, diagramme[0].patient_id);
+        if (!patient) return res.status(403).json({ error: 'Accès non autorisé' });
+
         await dbAsync.execute(
-            'UPDATE diagrammes SET signe_le = datetime("now"), signature_data = ? WHERE id = ? AND infirmier_id = ?',
-            [signature_data, req.params.id, req.user.id]
+            'UPDATE diagrammes SET signe_le = datetime("now"), signature_data = ? WHERE id = ?',
+            [signature_data, req.params.id]
         );
         res.json({ message: 'Diagramme signé' });
     } catch (error) {
