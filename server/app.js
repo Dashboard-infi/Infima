@@ -474,7 +474,7 @@ app.get('/api/patients', authenticateToken, async (req, res) => {
                 [req.user.id]
             );
         }
-        res.json(rows);
+        res.json(rows[0] || []);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -538,10 +538,11 @@ app.put('/api/patients/:id', authenticateToken, async (req, res) => {
 app.delete('/api/patients/:id', authenticateToken, async (req, res) => {
     try {
         const { reason } = req.body;
-        const [rows] = await dbAsync.query('SELECT id FROM patients WHERE id = ? AND infirmier_id = ?', [req.params.id, req.user.id]);
-        if (rows.length === 0) return res.status(404).json({ error: 'Patient non trouvé' });
+        // Vérifier que le patient existe et appartient à cet infirmier (seul le propriétaire peut supprimer)
+        const [rows] = await dbAsync.query('SELECT id FROM patients WHERE id = ? AND infirmier_id = ? AND deleted_at IS NULL', [req.params.id, req.user.id]);
+        if (rows.length === 0) return res.status(404).json({ error: 'Patient non trouvé ou vous n\'êtes pas le propriétaire de ce patient' });
         await dbAsync.execute(
-            'UPDATE patients SET deleted_at = NOW(), delete_reason = ? WHERE id = ?',
+            "UPDATE patients SET deleted_at = datetime('now'), delete_reason = ? WHERE id = ?",
             [reason || 'autre', req.params.id]
         );
         res.json({ message: 'Patient archivé' });
