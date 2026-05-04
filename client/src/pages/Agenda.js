@@ -1,16 +1,36 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { api } from '../api';
-import { format, addDays, subDays, startOfWeek } from 'date-fns';
-import { fr } from 'date-fns/locale';
+
+const STATUS_MAP = {
+  effectue: { cls: 'badge-green', label: 'Effectué' },
+  en_cours: { cls: 'badge-amber', label: 'En cours' },
+  planifie: { cls: 'badge-blue',  label: 'À venir' },
+  annule:   { cls: 'badge-red',   label: 'Annulé' },
+};
+
+function emptyForm() {
+  return { patient_id: '', type_soin: '', duree_minutes: 30, notes: '', heure: '08:00' };
+}
 
 export default function Agenda() {
   const [selectedDate, setSelectedDate] = useState(new Date());
-  const [rdvs, setRdvs] = useState([]);
-  const [patients, setPatients] = useState([]);
-  const [showModal, setShowModal] = useState(false);
-  const [form, setForm] = useState({ patient_id: '', date_rdv: '', type_soin: '', duree_minutes: 30, notes: '' });
+  const [rdvs,         setRdvs]         = useState([]);
+  const [patients,     setPatients]      = useState([]);
+  const [showModal,    setShowModal]     = useState(false);
+  const [editRdv,      setEditRdv]       = useState(null);
+  const [form,         setForm]          = useState(emptyForm());
+  const [loading,      setLoading]       = useState(false);
 
-  const dateStr = format(selectedDate, 'yyyy-MM-dd');
+  const dateStr  = selectedDate.toISOString().split('T')[0];
+  const weekStart = new Date(selectedDate);
+  const day = weekStart.getDay();
+  const diff = weekStart.getDate() - day + (day === 0 ? -6 : 1);
+  weekStart.setDate(diff);
+  const weekDays  = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(weekStart);
+    d.setDate(d.getDate() + i);
+    return d;
+  });
 
   const loadRdvs = useCallback(() => {
     api.getAgenda({ date: dateStr }).then(setRdvs).catch(() => {});
@@ -21,22 +41,56 @@ export default function Agenda() {
     api.getPatients().then(setPatients).catch(() => {});
   }, [loadRdvs]);
 
-  const handleCreate = async (e) => {
+  const openCreate = () => {
+    setEditRdv(null);
+    setForm(emptyForm());
+    setShowModal(true);
+  };
+
+  const openEdit = (rdv) => {
+    setEditRdv(rdv);
+    const heureExistante = rdv.date_rdv ? rdv.date_rdv.substring(11, 16) : '08:00';
+    setForm({
+      patient_id:    rdv.patient_id || '',
+      type_soin:     rdv.type_soin  || '',
+      duree_minutes: rdv.duree_minutes || 30,
+      notes:         rdv.notes || '',
+      heure:         heureExistante,
+    });
+    setShowModal(true);
+  };
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
+    setLoading(true);
     try {
-      await api.createRdv({ ...form, date_rdv: `${dateStr} ${form.heure || '08:00'}:00` });
+      const date_rdv = `${dateStr} ${form.heure}:00`;
+      if (editRdv) {
+        await api.updateRdv(editRdv.id, { ...form, date_rdv });
+      } else {
+        await api.createRdv({ ...form, date_rdv });
+      }
       setShowModal(false);
-      setForm({ patient_id: '', date_rdv: '', type_soin: '', duree_minutes: 30, notes: '', heure: '' });
+      // BUG FIX: réinitialiser correctement le formulaire (heure incluse)
+      setForm(emptyForm());
+      setEditRdv(null);
       loadRdvs();
-    } catch (err) { alert(err.message); }
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const updateStatut = async (id, statut) => {
+    const rdv = rdvs.find(r => r.id === id);
+    if (!rdv) return;
     try {
-      const rdv = rdvs.find(r => r.id === id);
       await api.updateRdv(id, { ...rdv, statut });
       loadRdvs();
-    } catch (err) { alert(err.message); }
+    } catch (err) {
+      alert(err.message);
+    }
   };
 
   const deleteRdv = async (id) => {
@@ -44,132 +98,144 @@ export default function Agenda() {
     try {
       await api.deleteRdv(id);
       loadRdvs();
-    } catch (err) { alert(err.message); }
+    } catch (err) {
+      alert(err.message);
+    }
   };
 
   const getStatusBadge = (statut) => {
-    const map = {
-      effectue: { cls: 'badge-green', label: 'Effectué' },
-      en_cours: { cls: 'badge-amber', label: 'En cours' },
-      planifie: { cls: 'badge-blue', label: 'À venir' },
-      annule: { cls: 'badge-red', label: 'Annulé' },
-    };
-    const s = map[statut] || map.planifie;
+    const s = STATUS_MAP[statut] || STATUS_MAP.planifie;
     return <span className={`badge ${s.cls}`}>{s.label}</span>;
   };
 
-  // Semaine courante
-  const weekStart = startOfWeek(selectedDate, { weekStartsOn: 1 });
-  const weekDays = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
-
   return (
     <div>
+      {/* Titre de la journée */}
       <div className="section-title">
-        {format(selectedDate, "EEEE d MMMM yyyy", { locale: fr })}
+        {selectedDate.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
       </div>
 
-      {/* Week selector */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 14, justifyContent: 'space-between' }}>
+      {/* Sélecteur de semaine */}
+      <div style={{ display: 'flex', gap: 5, marginBottom: 14, background: '#fff', borderRadius: 12, padding: '5px 4px', border: '1px solid #DFE4EB' }}>
         {weekDays.map(day => {
-          const isSelected = format(day, 'yyyy-MM-dd') === dateStr;
+          const dayStr = day.toISOString().split('T')[0];
+          const isSelected = dayStr === dateStr;
+          const isToday    = dayStr === new Date().toISOString().split('T')[0];
           return (
-            <button key={day.toISOString()} onClick={() => setSelectedDate(day)}
+            <button
+              key={day.toISOString()}
+              className="week-day-btn"
+              onClick={() => setSelectedDate(day)}
               style={{
-                flex: 1, padding: '8px 2px', borderRadius: 10, border: 'none',
-                background: isSelected ? '#0A3D62' : '#fff',
-                color: isSelected ? '#fff' : '#3d4555',
-                cursor: 'pointer', fontFamily: 'inherit', boxShadow: isSelected ? 'none' : '0 1px 3px rgba(0,0,0,0.06)',
-                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
-              }}>
-              <span style={{ fontSize: 9, textTransform: 'uppercase', opacity: 0.7 }}>
-                {format(day, 'EEE', { locale: fr })}
-              </span>
-              <span style={{ fontSize: 14, fontWeight: 600 }}>{format(day, 'd')}</span>
+                background: isSelected ? '#0C2D4E' : 'transparent',
+                color: isSelected ? '#fff' : isToday ? '#0C2D4E' : '#6B7A8D',
+                cursor: 'pointer',
+              }}
+            >
+              <div className="day-name">{day.toLocaleDateString('fr-FR', { weekday: 'short' })}</div>
+              <div className="day-num"
+                style={{
+                  width: 28, height: 28, borderRadius: '50%',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  margin: '2px auto 0',
+                  background: isSelected ? 'rgba(255,255,255,0.15)' : isToday ? '#EBF3FB' : 'transparent',
+                  fontWeight: isToday || isSelected ? 700 : 400,
+                }}
+              >
+                {day.getDate()}
+              </div>
             </button>
           );
         })}
       </div>
 
-      {/* Navigation jour */}
-      <div className="flex items-center justify-between mb-2">
-        <button className="btn btn-sm btn-secondary" onClick={() => setSelectedDate(d => subDays(d, 1))}>← Veille</button>
-        <button className="btn btn-sm btn-secondary" onClick={() => setSelectedDate(new Date())}>Aujourd'hui</button>
-        <button className="btn btn-sm btn-secondary" onClick={() => setSelectedDate(d => addDays(d, 1))}>Lendemain →</button>
-      </div>
-
       {/* Liste des RDV */}
       {rdvs.length === 0 ? (
         <div className="empty-state">
-          <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="18" rx="3" stroke="currentColor" strokeWidth="1.5"/><path d="M3 9h18M8 4v3M16 4v3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.3">
+            <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+          </svg>
+          <h4>Journée libre</h4>
           <p>Aucun rendez-vous ce jour</p>
         </div>
       ) : (
-        rdvs.map(rdv => (
-          <div className="card" key={rdv.id}>
-            <div className="card-row" style={{ marginBottom: 6 }}>
-              <span style={{ fontSize: 13, fontWeight: 600, color: '#0A3D62' }}>
-                {format(new Date(rdv.date_rdv), 'HH:mm')}
-              </span>
-              {getStatusBadge(rdv.statut)}
-            </div>
-            <div style={{ fontSize: 13, fontWeight: 500 }}>
-              {rdv.patient_prenom} {rdv.patient_nom}
-            </div>
-            <div style={{ fontSize: 11, color: '#7a8499', marginTop: 2 }}>
-              {rdv.patient_adresse}{rdv.patient_ville ? `, ${rdv.patient_ville}` : ''}
-            </div>
-            <div style={{ fontSize: 11, color: '#7a8499', marginTop: 2 }}>
-              {rdv.type_soin}
-            </div>
-            {rdv.notes && <div style={{ fontSize: 11, color: '#7a8499', marginTop: 2, fontStyle: 'italic' }}>{rdv.notes}</div>}
-            <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-              {rdv.statut === 'planifie' && (
-                <button className="btn btn-sm btn-secondary" onClick={() => updateStatut(rdv.id, 'en_cours')}>Démarrer</button>
+        rdvs.map(rdv => {
+          const heure = rdv.date_rdv ? rdv.date_rdv.substring(11, 16) : '—';
+          const patient = patients.find(p => p.id === rdv.patient_id);
+          return (
+            <div key={rdv.id} className="card" style={{ borderLeft: `3px solid ${rdv.statut === 'effectue' ? '#1A8C6A' : rdv.statut === 'annule' ? '#B02020' : '#0C2D4E'}` }}>
+              <div className="card-row" style={{ marginBottom: 6 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: '#0C2D4E', minWidth: 38 }}>{heure}</span>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#16202E' }}>
+                      {patient ? `${patient.prenom} ${patient.nom}` : rdv.patient_nom || 'Patient'}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#6B7A8D' }}>{rdv.type_soin || '—'}</div>
+                  </div>
+                </div>
+                {getStatusBadge(rdv.statut)}
+              </div>
+
+              {rdv.notes && (
+                <div style={{ fontSize: 11.5, color: '#6B7A8D', marginBottom: 8, paddingLeft: 48 }}>{rdv.notes}</div>
               )}
-              {rdv.statut === 'en_cours' && (
-                <button className="btn btn-sm btn-green" onClick={() => updateStatut(rdv.id, 'effectue')}>Terminer</button>
-              )}
-              <button className="btn btn-sm btn-danger" onClick={() => deleteRdv(rdv.id)}>Supprimer</button>
+
+              <div style={{ display: 'flex', gap: 6, paddingLeft: 48, flexWrap: 'wrap' }}>
+                {rdv.statut !== 'effectue' && (
+                  <button className="btn btn-sm btn-green" onClick={() => updateStatut(rdv.id, 'effectue')}>✓ Effectué</button>
+                )}
+                {rdv.statut === 'planifie' && (
+                  <button className="btn btn-sm btn-secondary" onClick={() => updateStatut(rdv.id, 'annule')}>Annuler</button>
+                )}
+                <button className="btn btn-sm btn-secondary" onClick={() => openEdit(rdv)}>Modifier</button>
+                <button className="btn btn-sm btn-danger" onClick={() => deleteRdv(rdv.id)}>Supprimer</button>
+              </div>
             </div>
-          </div>
-        ))
+          );
+        })
       )}
 
-      <button className="btn btn-primary" onClick={() => setShowModal(true)} style={{ marginTop: 8 }}>
-        + Nouveau rendez-vous
-      </button>
+      {/* FAB */}
+      <button className="fab" onClick={openCreate} title="Nouveau rendez-vous">+</button>
 
-      {/* Modal création RDV */}
+      {/* ===== MODAL ===== */}
       {showModal && (
         <div className="modal-overlay" onClick={() => setShowModal(false)}>
           <div className="modal-content" onClick={e => e.stopPropagation()}>
-            <div className="modal-title">Nouveau rendez-vous</div>
-            <form onSubmit={handleCreate}>
+            <div className="modal-handle" />
+            <div className="modal-title">{editRdv ? 'Modifier le rendez-vous' : 'Nouveau rendez-vous'}</div>
+            <button className="modal-close" onClick={() => setShowModal(false)}>✕</button>
+
+            <form onSubmit={handleSubmit}>
               <div className="form-group">
-                <label>Patient</label>
+                <label>Patient *</label>
                 <select value={form.patient_id} onChange={e => setForm({...form, patient_id: e.target.value})} required>
-                  <option value="">Choisir un patient</option>
-                  {patients.map(p => <option key={p.id} value={p.id}>{p.nom} {p.prenom}</option>)}
+                  <option value="">Sélectionner un patient…</option>
+                  {patients.map(p => <option key={p.id} value={p.id}>{p.prenom} {p.nom}</option>)}
                 </select>
               </div>
-              <div className="form-group">
-                <label>Heure</label>
-                <input type="time" value={form.heure || ''} onChange={e => setForm({...form, heure: e.target.value})} required />
-              </div>
-              <div className="form-group">
-                <label>Durée (minutes)</label>
-                <input type="number" value={form.duree_minutes} onChange={e => setForm({...form, duree_minutes: e.target.value})} />
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div className="form-group">
+                  <label>Heure *</label>
+                  <input type="time" value={form.heure} onChange={e => setForm({...form, heure: e.target.value})} required />
+                </div>
+                <div className="form-group">
+                  <label>Durée (min)</label>
+                  <input type="number" min="5" max="240" step="5" value={form.duree_minutes} onChange={e => setForm({...form, duree_minutes: parseInt(e.target.value)})} />
+                </div>
               </div>
               <div className="form-group">
                 <label>Type de soin</label>
-                <input value={form.type_soin} onChange={e => setForm({...form, type_soin: e.target.value})} placeholder="Ex: Pansement, Injection..." />
+                <input value={form.type_soin} onChange={e => setForm({...form, type_soin: e.target.value})} placeholder="Pansement, injection…" />
               </div>
               <div className="form-group">
                 <label>Notes</label>
-                <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} />
+                <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} placeholder="Informations complémentaires…" />
               </div>
-              <button className="btn btn-primary" type="submit">Créer le rendez-vous</button>
-              <button className="btn btn-secondary" type="button" onClick={() => setShowModal(false)} style={{ marginTop: 8 }}>Annuler</button>
+              <button className="btn btn-primary" type="submit" disabled={loading}>
+                {loading ? 'Enregistrement…' : editRdv ? 'Mettre à jour' : 'Créer le rendez-vous'}
+              </button>
             </form>
           </div>
         </div>

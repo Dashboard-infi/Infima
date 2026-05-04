@@ -1,29 +1,32 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { api } from '../api';
-import { format, startOfWeek, addDays, addWeeks, subWeeks } from 'date-fns';
-import { fr } from 'date-fns/locale';
 
 const TYPE_LABELS = {
   travail: 'Travail', conge: 'Congé', garde: 'Garde', formation: 'Formation', autre: 'Autre'
 };
 const TYPE_COLORS = {
-  travail: '#0A3D62', conge: '#1D9E75', garde: '#D85A30', formation: '#185FA5', autre: '#7a8499'
+  travail: '#0C2D4E', conge: '#1D9E75', garde: '#D85A30', formation: '#1A4A6E', autre: '#7a8499'
 };
 
 export default function Planning() {
-  const [weekStart, setWeekStart] = useState(startOfWeek(new Date(), { weekStartsOn: 1 }));
+  const [weekStart, setWeekStart] = useState(getStartOfWeek(new Date()));
   const [events, setEvents] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [editId, setEditId] = useState(null);
-  const [form, setForm] = useState({ date_debut: '', date_fin: '', type_event: 'travail', titre: '', description: '', couleur: '#0A3D62' });
+  const [form, setForm] = useState({ date_debut: '', date_fin: '', type_event: 'travail', titre: '', description: '', couleur: '#0C2D4E' });
 
-  const weekEnd = addDays(weekStart, 6);
-  const weekDays = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekEnd.getDate() + 6);
+  const weekDays = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(weekStart);
+    d.setDate(d.getDate() + i);
+    return d;
+  });
 
   const loadEvents = useCallback(() => {
     api.getPlanning({
-      debut: format(weekStart, 'yyyy-MM-dd'),
-      fin: format(weekEnd, 'yyyy-MM-dd')
+      debut: formatDate(weekStart),
+      fin: formatDate(weekEnd)
     }).then(setEvents).catch(() => {});
   }, [weekEnd, weekStart]);
 
@@ -39,7 +42,7 @@ export default function Planning() {
       }
       setShowModal(false);
       setEditId(null);
-      setForm({ date_debut: '', date_fin: '', type_event: 'travail', titre: '', description: '', couleur: '#0A3D62' });
+      setForm({ date_debut: '', date_fin: '', type_event: 'travail', titre: '', description: '', couleur: '#0C2D4E' });
       loadEvents();
     } catch (err) { alert(err.message); }
   };
@@ -47,12 +50,12 @@ export default function Planning() {
   const editEvent = (event) => {
     setEditId(event.id);
     setForm({
-      date_debut: format(new Date(event.date_debut), "yyyy-MM-dd'T'HH:mm"),
-      date_fin: format(new Date(event.date_fin), "yyyy-MM-dd'T'HH:mm"),
+      date_debut: formatDateTime(new Date(event.date_debut)),
+      date_fin: formatDateTime(new Date(event.date_fin)),
       type_event: event.type_event,
       titre: event.titre || '',
       description: event.description || '',
-      couleur: event.couleur || '#0A3D62'
+      couleur: event.couleur || '#0C2D4E'
     });
     setShowModal(true);
   };
@@ -66,49 +69,61 @@ export default function Planning() {
   };
 
   const getEventsForDay = (day) => {
-    const dayStr = format(day, 'yyyy-MM-dd');
+    const dayStr = formatDate(day);
     return events.filter(e => {
-      const start = format(new Date(e.date_debut), 'yyyy-MM-dd');
-      const end = format(new Date(e.date_fin), 'yyyy-MM-dd');
+      const start = formatDate(new Date(e.date_debut));
+      const end = formatDate(new Date(e.date_fin));
       return dayStr >= start && dayStr <= end;
     });
+  };
+
+  const prevWeek = () => {
+    const newStart = new Date(weekStart);
+    newStart.setDate(newStart.getDate() - 7);
+    setWeekStart(newStart);
+  };
+
+  const nextWeek = () => {
+    const newStart = new Date(weekStart);
+    newStart.setDate(newStart.getDate() + 7);
+    setWeekStart(newStart);
   };
 
   return (
     <div>
       {/* Navigation semaine */}
       <div className="flex items-center justify-between mb-2">
-        <button className="btn btn-sm btn-secondary" onClick={() => setWeekStart(w => subWeeks(w, 1))}>← Sem.</button>
-        <span style={{ fontSize: 13, fontWeight: 600, color: '#0A3D62' }}>
-          {format(weekStart, 'd MMM', { locale: fr })} — {format(weekEnd, 'd MMM yyyy', { locale: fr })}
+        <button className="btn btn-sm btn-secondary" onClick={prevWeek}>← Sem.</button>
+        <span style={{ fontSize: 13, fontWeight: 600, color: '#0C2D4E' }}>
+          {formatDateFr(weekStart)} — {formatDateFr(weekEnd)}
         </span>
-        <button className="btn btn-sm btn-secondary" onClick={() => setWeekStart(w => addWeeks(w, 1))}>Sem. →</button>
+        <button className="btn btn-sm btn-secondary" onClick={nextWeek}>Sem. →</button>
       </div>
 
       {/* Planning semaine */}
       {weekDays.map(day => {
         const dayEvents = getEventsForDay(day);
-        const isToday = format(day, 'yyyy-MM-dd') === format(new Date(), 'yyyy-MM-dd');
+        const isToday = formatDate(day) === formatDate(new Date());
         return (
           <div key={day.toISOString()} style={{ marginBottom: 8 }}>
             <div style={{
               fontSize: 12, fontWeight: 600, padding: '6px 10px', borderRadius: '8px 8px 0 0',
-              background: isToday ? '#0A3D62' : '#e8eaf0',
+              background: isToday ? '#0C2D4E' : '#e8eaf0',
               color: isToday ? '#fff' : '#3d4555'
             }}>
-              {format(day, 'EEEE d MMMM', { locale: fr })}
+              {formatDateLong(day)}
             </div>
             <div style={{ background: '#fff', borderRadius: '0 0 8px 8px', border: '1px solid #e8eaf0', borderTop: 'none', padding: dayEvents.length > 0 ? 8 : 0, minHeight: dayEvents.length > 0 ? 0 : 32, display: 'flex', flexDirection: 'column', gap: 6 }}>
               {dayEvents.length === 0 && (
                 <div style={{ fontSize: 11, color: '#c8ccd6', textAlign: 'center', padding: 8 }}>—</div>
               )}
               {dayEvents.map(event => (
-                <div key={event.id} className="planning-event" style={{ borderLeftColor: event.couleur || TYPE_COLORS[event.type_event] || '#0A3D62', background: (event.couleur || TYPE_COLORS[event.type_event] || '#0A3D62') + '15' }}>
+                <div key={event.id} className="planning-event" style={{ borderLeftColor: event.couleur || TYPE_COLORS[event.type_event] || '#0C2D4E', background: (event.couleur || TYPE_COLORS[event.type_event] || '#0C2D4E') + '15' }}>
                   <div className="flex items-center justify-between">
                     <div>
                       <div className="planning-event-title">{event.titre || TYPE_LABELS[event.type_event]}</div>
                       <div className="planning-event-sub">
-                        {format(new Date(event.date_debut), 'HH:mm')} — {format(new Date(event.date_fin), 'HH:mm')}
+                        {formatTime(new Date(event.date_debut))} — {formatTime(new Date(event.date_fin))}
                         {event.infirmier_nom && ` • ${event.infirmier_prenom} ${event.infirmier_nom}`}
                       </div>
                       {event.description && <div className="planning-event-sub">{event.description}</div>}
@@ -125,7 +140,7 @@ export default function Planning() {
         );
       })}
 
-      <button className="btn btn-primary" onClick={() => { setEditId(null); setForm({ date_debut: '', date_fin: '', type_event: 'travail', titre: '', description: '', couleur: '#0A3D62' }); setShowModal(true); }} style={{ marginTop: 8 }}>
+      <button className="btn btn-primary" onClick={() => { setEditId(null); setForm({ date_debut: '', date_fin: '', type_event: 'travail', titre: '', description: '', couleur: '#0C2D4E' }); setShowModal(true); }} style={{ marginTop: 8 }}>
         + Ajouter un événement
       </button>
 
@@ -164,4 +179,43 @@ export default function Planning() {
       )}
     </div>
   );
+}
+
+// Helper functions for date formatting without date-fns
+function getStartOfWeek(date) {
+  const d = new Date(date);
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+  d.setDate(diff);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function formatDate(date) {
+  return date.toISOString().split('T')[0];
+}
+
+function formatDateTime(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function formatDateFr(date) {
+  const options = { day: 'numeric', month: 'short' };
+  return date.toLocaleDateString('fr-FR', options);
+}
+
+function formatDateLong(date) {
+  const options = { weekday: 'long', day: 'numeric', month: 'long' };
+  return date.toLocaleDateString('fr-FR', options);
+}
+
+function formatTime(date) {
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${hours}:${minutes}`;
 }

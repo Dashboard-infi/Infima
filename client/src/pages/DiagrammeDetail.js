@@ -4,7 +4,7 @@ import SignatureCanvas from 'react-signature-canvas';
 import { api } from '../api';
 
 const JOURS_SEMAINE = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'];
-const COULEURS_LEGENDE = ['#0A3D62', '#1D9E75', '#D4A017', '#A32D2D', '#7C3AED', '#DB2777', '#0891B2', '#EA580C'];
+const COULEURS_LEGENDE = ['#0C2D4E', '#1D9E75', '#D4A017', '#A32D2D', '#7C3AED', '#DB2777', '#0891B2', '#EA580C'];
 
 export default function DiagrammeDetail() {
   const { id } = useParams();
@@ -14,7 +14,7 @@ export default function DiagrammeDetail() {
   const [legendes, setLegendes] = useState([]);
   const [saving, setSaving] = useState(false);
   const [showLegendeForm, setShowLegendeForm] = useState(false);
-  const [newLegende, setNewLegende] = useState({ label: '', couleur: '#0A3D62' });
+  const [newLegende, setNewLegende] = useState({ label: '', couleur: '#0C2D4E' });
   const [selectedLegendes, setSelectedLegendes] = useState({});
   const sigRef = useRef();
 
@@ -28,7 +28,6 @@ export default function DiagrammeDetail() {
         if (c.legendes) {
           try {
             const parsed = typeof c.legendes === 'string' ? JSON.parse(c.legendes) : c.legendes;
-            // Migration: if old format (array), convert to new {matin:[], midi:[], soir:[]}
             if (Array.isArray(parsed)) {
               sel[c.id] = { matin: parsed, midi: [], soir: [] };
             } else {
@@ -76,7 +75,7 @@ export default function DiagrammeDetail() {
     if (!newLegende.label.trim()) return;
     try {
       await api.createLegende(diag.patient_id, newLegende);
-      setNewLegende({ label: '', couleur: '#0A3D62' });
+      setNewLegende({ label: '', couleur: '#0C2D4E' });
       setShowLegendeForm(false);
       loadLegendes();
     } catch (err) { alert(err.message); }
@@ -113,12 +112,12 @@ export default function DiagrammeDetail() {
 
   return (
     <div>
-      <button className="header-back" onClick={() => navigate('/soins')} style={{ color: '#0A3D62', marginBottom: 10 }}>
+      <button className="header-back" onClick={() => navigate('/soins')} style={{ color: '#0C2D4E', marginBottom: 10 }}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M19 12H5M12 5l-7 7 7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
         Retour
       </button>
 
-      <div className="card" style={{ background: 'linear-gradient(135deg, #0A3D62 0%, #185FA5 100%)', color: '#fff', border: 'none' }}>
+      <div className="card" style={{ background: 'linear-gradient(135deg, #0C2D4E 0%, #1A4A6E 100%)', color: '#fff', border: 'none' }}>
         <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>
           {diag.patient_nom} {diag.patient_prenom}
         </div>
@@ -140,7 +139,7 @@ export default function DiagrammeDetail() {
           <div style={{ fontSize: 12, fontWeight: 700, color: '#1a1f2e', textTransform: 'uppercase', letterSpacing: 0.5 }}>Légende des soins</div>
           {!diag.signe_le && (
             <button onClick={() => setShowLegendeForm(!showLegendeForm)}
-              style={{ fontSize: 11, fontWeight: 600, color: '#185FA5', background: '#E6F1FB', padding: '4px 10px', borderRadius: 6, border: 'none', cursor: 'pointer' }}>
+              style={{ fontSize: 11, fontWeight: 600, color: '#1A4A6E', background: '#E6F1FB', padding: '4px 10px', borderRadius: 6, border: 'none', cursor: 'pointer' }}>
               {showLegendeForm ? 'Annuler' : '+ Ajouter'}
             </button>
           )}
@@ -158,7 +157,7 @@ export default function DiagrammeDetail() {
                   style={{ width: 24, height: 24, borderRadius: '50%', background: c, cursor: 'pointer', border: newLegende.couleur === c ? '3px solid #1a1f2e' : '2px solid transparent' }} />
               ))}
             </div>
-            <button onClick={addLegende} style={{ background: '#0A3D62', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 11, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>OK</button>
+            <button onClick={addLegende} style={{ background: '#0C2D4E', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 11, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>OK</button>
           </div>
         )}
 
@@ -189,21 +188,18 @@ export default function DiagrammeDetail() {
         return (
           <div key={c.id} className="card" style={{
             padding: '10px 12px', marginBottom: 6,
-            borderLeft: isToday ? '4px solid #0A3D62' : isWeekend ? '4px solid #A32D2D' : '4px solid transparent',
+            borderLeft: isToday ? '4px solid #0C2D4E' : isWeekend ? '4px solid #A32D2D' : '4px solid transparent',
             background: isToday ? '#E6F1FB' : idx % 2 === 0 ? '#fff' : '#fafbfc'
           }}>
-            {/* Nom du jour */}
             <div style={{
               fontSize: 12, fontWeight: isToday ? 700 : 600, marginBottom: 8,
-              color: isToday ? '#0A3D62' : isWeekend ? '#A32D2D' : '#3d4555'
+              color: isToday ? '#0C2D4E' : isWeekend ? '#A32D2D' : '#3d4555'
             }}>{jourLabel}</div>
-            {/* 3 colonnes : Matin / Midi / Soir */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
               {['matin', 'midi', 'soir'].map(field => {
                 const fieldLegs = caseLeg[field] || [];
                 return (
                   <div key={field}>
-                    {/* Header créneau + checkbox principale */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: legendes.length > 0 ? 6 : 0 }}>
                       <div
                         className={`check-box ${c[field] ? 'done' : ''}`}
@@ -218,7 +214,6 @@ export default function DiagrammeDetail() {
                       </div>
                       <span style={{ fontSize: 10, fontWeight: 600, color: '#3d4555', textTransform: 'capitalize' }}>{field}</span>
                     </div>
-                    {/* Légendes verticales sous ce créneau */}
                     {legendes.length > 0 && (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 3, paddingLeft: 2 }}>
                         {legendes.map(l => {
@@ -266,7 +261,7 @@ export default function DiagrammeDetail() {
           <div className="signature-zone">
             <SignatureCanvas
               ref={sigRef}
-              penColor="#0A3D62"
+              penColor="#0C2D4E"
               canvasProps={{ style: { width: '100%', height: 120 } }}
             />
           </div>
