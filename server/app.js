@@ -649,7 +649,7 @@ app.post('/api/patients/:id/vitaux', authenticateToken, async (req, res) => {
 app.get('/api/agenda', authenticateToken, async (req, res) => {
     try {
         const { date } = req.query;
-        let query = 'SELECT a.*, p.nom as patient_nom, p.prenom as patient_prenom FROM agenda a LEFT JOIN patients p ON a.patient_id = p.id WHERE a.infirmier_id = ?';
+        let query = 'SELECT a.*, p.nom as patient_nom, p.prenom as patient_prenom, p.adresse as patient_adresse, p.ville as patient_ville, p.code_postal as patient_code_postal, p.telephone as patient_telephone FROM agenda a LEFT JOIN patients p ON a.patient_id = p.id WHERE a.infirmier_id = ?';
         const params = [req.user.id];
         if (date) {
             query += ' AND DATE(a.date_rdv) = ?';
