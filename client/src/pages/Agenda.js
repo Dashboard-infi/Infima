@@ -172,6 +172,16 @@ export default function Agenda() {
                       {patient ? `${patient.prenom} ${patient.nom}` : rdv.patient_nom || 'Patient'}
                     </div>
                     <div style={{ fontSize: 11, color: '#6B7A8D' }}>{rdv.type_soin || '—'}</div>
+                    {patient && (patient.adresse || patient.ville) && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#9CA8B8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/>
+                        </svg>
+                        <span style={{ fontSize: 10.5, color: '#9CA8B8' }}>
+                          {[patient.adresse, patient.code_postal, patient.ville].filter(Boolean).join(', ')}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
                 {getStatusBadge(rdv.statut)}

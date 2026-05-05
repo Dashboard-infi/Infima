@@ -137,12 +137,10 @@ export default function DiagrammeDetail() {
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: '#1a1f2e', textTransform: 'uppercase', letterSpacing: 0.5 }}>Légende des soins</div>
-          {!diag.signe_le && (
-            <button onClick={() => setShowLegendeForm(!showLegendeForm)}
-              style={{ fontSize: 11, fontWeight: 600, color: '#1A4A6E', background: '#E6F1FB', padding: '4px 10px', borderRadius: 6, border: 'none', cursor: 'pointer' }}>
-              {showLegendeForm ? 'Annuler' : '+ Ajouter'}
-            </button>
-          )}
+          <button onClick={() => setShowLegendeForm(!showLegendeForm)}
+            style={{ fontSize: 11, fontWeight: 600, color: '#1A4A6E', background: '#E6F1FB', padding: '4px 10px', borderRadius: 6, border: 'none', cursor: 'pointer' }}>
+            {showLegendeForm ? 'Annuler' : '+ Ajouter'}
+          </button>
         </div>
 
         {showLegendeForm && (
@@ -169,9 +167,7 @@ export default function DiagrammeDetail() {
               <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 5, background: l.couleur + '18', padding: '4px 10px', borderRadius: 20, border: `1.5px solid ${l.couleur}40` }}>
                 <div style={{ width: 8, height: 8, borderRadius: '50%', background: l.couleur }} />
                 <span style={{ fontSize: 11, fontWeight: 500, color: l.couleur }}>{l.label}</span>
-                {!diag.signe_le && (
-                  <button onClick={() => removeLegende(l.id)} style={{ background: 'none', border: 'none', color: '#A32D2D', cursor: 'pointer', fontSize: 12, fontWeight: 700, padding: '0 2px', lineHeight: 1 }}>×</button>
-                )}
+                <button onClick={() => removeLegende(l.id)} style={{ background: 'none', border: 'none', color: '#A32D2D', cursor: 'pointer', fontSize: 12, fontWeight: 700, padding: '0 2px', lineHeight: 1 }}>×</button>
               </div>
             ))}
           </div>
@@ -203,8 +199,8 @@ export default function DiagrammeDetail() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: legendes.length > 0 ? 6 : 0 }}>
                       <div
                         className={`check-box ${c[field] ? 'done' : ''}`}
-                        onClick={() => !diag.signe_le && toggleCase(c.id, field)}
-                        style={{ width: 20, height: 20, cursor: diag.signe_le ? 'default' : 'pointer' }}
+                        onClick={() => toggleCase(c.id, field)}
+                        style={{ width: 20, height: 20, cursor: 'pointer' }}
                       >
                         {c[field] && (
                           <svg width="11" height="11" viewBox="0 0 12 12">
@@ -220,8 +216,8 @@ export default function DiagrammeDetail() {
                           const isSelected = fieldLegs.includes(l.id);
                           return (
                             <div key={l.id}
-                              onClick={() => !diag.signe_le && toggleLegendeOnCase(c.id, field, l.id)}
-                              style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: diag.signe_le ? 'default' : 'pointer' }}>
+                              onClick={() => toggleLegendeOnCase(c.id, field, l.id)}
+                              style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
                               <div style={{
                                 width: 15, height: 15, borderRadius: 3, flexShrink: 0,
                                 border: isSelected ? `2px solid ${l.couleur}` : '1.5px solid #c8ccd6',
@@ -249,35 +245,34 @@ export default function DiagrammeDetail() {
         );
       })}
 
-      {!diag.signe_le && (
-        <>
-          <button className="btn btn-secondary mb-2" onClick={saveCases} disabled={saving}
-            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" stroke="currentColor" strokeWidth="1.5"/><path d="M17 21v-8H7v8M7 3v5h8" stroke="currentColor" strokeWidth="1.5"/></svg>
-            {saving ? 'Sauvegarde...' : 'Sauvegarder'}
-          </button>
-
-          <div className="section-title">Signature infirmière</div>
-          <div className="signature-zone">
-            <SignatureCanvas
-              ref={sigRef}
-              penColor="#0C2D4E"
-              canvasProps={{ style: { width: '100%', height: 120 } }}
-            />
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn btn-secondary" onClick={clearSignature} style={{ flex: 1 }}>Effacer</button>
-            <button className="btn btn-primary" onClick={signer} style={{ flex: 2 }}>Valider et signer</button>
-          </div>
-        </>
-      )}
+      <button className="btn btn-secondary mb-2" onClick={saveCases} disabled={saving}
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" stroke="currentColor" strokeWidth="1.5"/><path d="M17 21v-8H7v8M7 3v5h8" stroke="currentColor" strokeWidth="1.5"/></svg>
+        {saving ? 'Sauvegarde...' : 'Sauvegarder'}
+      </button>
 
       {diag.signe_le && diag.signature_data && (
-        <div className="card mt-3">
-          <div className="section-title" style={{ margin: '0 0 8px' }}>Signature</div>
+        <div className="card" style={{ marginBottom: 8 }}>
+          <div className="section-title" style={{ margin: '0 0 8px' }}>Dernière signature</div>
+          <div style={{ fontSize: 11, color: '#7a8499', marginBottom: 6 }}>
+            Signée le {new Date(diag.signe_le).toLocaleDateString('fr-FR')}
+          </div>
           <img src={diag.signature_data} alt="Signature" style={{ maxWidth: '100%', borderRadius: 8 }} />
         </div>
       )}
+
+      <div className="section-title">Signature infirmière</div>
+      <div className="signature-zone">
+        <SignatureCanvas
+          ref={sigRef}
+          penColor="#0C2D4E"
+          canvasProps={{ style: { width: '100%', height: 120 } }}
+        />
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button className="btn btn-secondary" onClick={clearSignature} style={{ flex: 1 }}>Effacer</button>
+        <button className="btn btn-primary" onClick={signer} style={{ flex: 2 }}>Valider et signer</button>
+      </div>
     </div>
   );
 }
