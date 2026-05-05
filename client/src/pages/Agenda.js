@@ -161,7 +161,7 @@ export default function Agenda() {
       ) : (
         rdvs.map(rdv => {
           const heure = rdv.date_rdv ? rdv.date_rdv.substring(11, 16) : '—';
-          const patient = patients.find(p => p.id === rdv.patient_id);
+          const patient = patients.find(p => Number(p.id) === Number(rdv.patient_id));
           return (
             <div key={rdv.id} className="card" style={{ borderLeft: `3px solid ${rdv.statut === 'effectue' ? '#1A8C6A' : rdv.statut === 'annule' ? '#B02020' : '#0C2D4E'}` }}>
               <div className="card-row" style={{ marginBottom: 6 }}>
@@ -180,6 +180,16 @@ export default function Agenda() {
                         <span style={{ fontSize: 10.5, color: '#9CA8B8' }}>
                           {[patient.adresse, patient.code_postal, patient.ville].filter(Boolean).join(', ')}
                         </span>
+                      </div>
+                    )}
+                    {patient && patient.telephone && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#9CA8B8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 8.81a19.79 19.79 0 01-3.07-8.65A2 2 0 012 .18h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L6.09 8.07a16 16 0 006.86 6.86l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/>
+                        </svg>
+                        <a href={`tel:${patient.telephone}`} style={{ fontSize: 10.5, color: '#9CA8B8', textDecoration: 'none' }}>
+                          {patient.telephone}
+                        </a>
                       </div>
                     )}
                   </div>
