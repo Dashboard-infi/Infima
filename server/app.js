@@ -71,7 +71,15 @@ async function compressAndSave(buffer, patientId, patientNom, description) {
 }
 
 // ========== BASE DE DONNÉES ==========
-const dbPath = path.join(__dirname, 'sante.db');
+// Sur Railway, utiliser /data/sante.db (volume persistant) sinon fallback local
+const dbDir = process.env.DB_PATH || path.join(__dirname, '.');
+const dbPath = path.join(dbDir, 'sante.db');
+
+// Créer le dossier si nécessaire (utile pour le volume Railway)
+if (!fs.existsSync(dbDir)) {
+    fs.mkdirSync(dbDir, { recursive: true });
+}
+
 const db = new sqlite3.Database(dbPath);
 
 // Wrapper pour simuler l'API async de MySQL
