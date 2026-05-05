@@ -663,6 +663,27 @@ app.get('/api/agenda', authenticateToken, async (req, res) => {
     }
 });
 
+
+app.get('/api/agenda/historique', authenticateToken, async (req, res) => {
+    try {
+        const { limit = 50, offset = 0, patient_id } = req.query;
+        let query = `SELECT a.*, p.nom as patient_nom, p.prenom as patient_prenom, p.adresse as patient_adresse, p.ville as patient_ville, p.code_postal as patient_code_postal, p.telephone as patient_telephone
+            FROM agenda a LEFT JOIN patients p ON a.patient_id = p.id
+            WHERE a.infirmier_id = ? AND a.date_rdv < datetime('now')`;
+        const params = [req.user.id];
+        if (patient_id) {
+            query += ' AND a.patient_id = ?';
+            params.push(patient_id);
+        }
+        query += ' ORDER BY a.date_rdv DESC LIMIT ? OFFSET ?';
+        params.push(parseInt(limit), parseInt(offset));
+        const [rows] = await dbAsync.query(query, params);
+        res.json(rows);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.post('/api/agenda', authenticateToken, async (req, res) => {
     try {
         const { patient_id, date_rdv, type_soin, duree_minutes, notes } = req.body;
@@ -1118,6 +1139,20 @@ app.use((err, req, res, next) => {
     }
     console.error('Erreur non gérée:', err);
     res.status(500).json({ error: 'Erreur interne du serveur.' });
+});
+
+
+// ========== NETTOYAGE AUTOMATIQUE ==========
+// Supprime les RDV de plus de 3 mois — tous les jours à 03:00
+cron.schedule('0 3 * * *', async () => {
+    try {
+        await dbAsync.execute(
+            `DELETE FROM agenda WHERE date_rdv < datetime('now', '-3 months')`
+        );
+        console.log('🧹 Nettoyage agenda : RDV de plus de 3 mois supprimés.');
+    } catch (err) {
+        console.error('Erreur nettoyage agenda:', err.message);
+    }
 });
 
 // ========== DÉMARRAGE ==========
